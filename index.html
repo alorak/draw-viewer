@@ -822,14 +822,33 @@ function buildStepData(root, text) {
   const total = Math.max(1, Number(root.userData?.numBuildingSteps) || 1);
   const data = Array.from({ length: total }, () => ({ partRefs: [] }));
 
-  // The loader already knows which top-level part instance belongs to which
-  // building step. This is much safer than assuming model.children order is
-  // identical to raw type-1 line order.
+  // Prefer physical Part groups from the loader tree. This also handles MPD
+  // submodels that have their own STEP directives: pieces inside the nested
+  // subassembly land in the same global buildingStep that Three.js renders.
+  root.traverse(group => {
+    if (!group.isGroup || group === root) return;
+
+    const type = String(group.userData?.type || '');
+    if (!/^(?:Part|Unofficial_Part)$/i.test(type)) return;
+
+    const step = Number(group.userData?.buildingStep);
+    const partId = group.name || group.userData?.fileName;
+    if (!partId || !Number.isFinite(step) || step < 0 || step >= total) return;
+
+    data[step].partRefs.push({
+      color: String(group.userData?.colorCode ?? '16'),
+      partId,
+    });
+  });
+
+  // Hand-authored files do not always declare !LDRAW_ORG Part metadata. For
+  // empty steps, fall back to named top-level groups before consulting text.
   for (const child of root.children) {
     if (!child.isGroup || !child.name) continue;
 
     const step = Number(child.userData?.buildingStep);
     if (!Number.isFinite(step) || step < 0 || step >= total) continue;
+    if (data[step].partRefs.length > 0) continue;
 
     data[step].partRefs.push({
       color: String(child.userData?.colorCode ?? '16'),
@@ -838,7 +857,7 @@ function buildStepData(root, text) {
   }
 
   // Some files contain direct geometry or unusual MPD layouts. Keep a raw-text
-  // parser as a BOM fallback only; model visibility remains loader-driven.
+  // parser as the last BOM fallback only; model visibility remains loader-driven.
   const fallback = parseTopLevelStepRefs(text);
   for (let i = 0; i < total; i++) {
     if (data[i].partRefs.length === 0 && fallback[i]?.length) {
