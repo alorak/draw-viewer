@@ -39,6 +39,7 @@ jobs:
         run: |
           mkdir -p _site
           cp index.html _site/index.html
+          cp ldraw-paths.txt _site/ldraw-paths.txt
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

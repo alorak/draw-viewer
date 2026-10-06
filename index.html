@@ -579,6 +579,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 // ═══════════════════════════════════════
 const PARTS_URL = 'https://raw.githubusercontent.com/gkjohnson/ldraw-parts-library/master/complete/ldraw/';
 const COLORS_URL = 'https://raw.githubusercontent.com/gkjohnson/ldraw-parts-library/master/colors/ldcfgalt.ldr';
+const LDRAW_PATH_MANIFEST_URL = './ldraw-paths.txt';
 
 const LDRAW_COLORS = {
   0:'#1B2A34',1:'#1E5AA8',2:'#00852B',3:'#069D9F',4:'#B40000',5:'#D05098',
@@ -620,6 +621,85 @@ let instructionRevision = 0;
 let instructionReady = false;
 let instructionGenerating = false;
 let instructionObjectUrls = [];
+let ldrawPathLookupPromise = null;
+
+// ═══════════════════════════════════════
+// LDRAW LIBRARY PATH RESOLUTION
+// ═══════════════════════════════════════
+function embeddedFileNames(text) {
+  const names = new Set();
+
+  for (const line of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+    const match = line.match(/^\s*0\s+FILE\s+(.+?)\s*$/i);
+    if (match) names.add(match[1].trim().replace(/\\/g, '/').toLowerCase());
+  }
+
+  return names;
+}
+
+async function loadLDrawPathLookup() {
+  if (!ldrawPathLookupPromise) {
+    ldrawPathLookupPromise = fetch(LDRAW_PATH_MANIFEST_URL, { cache: 'force-cache' })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('Path manifest HTTP ' + response.status);
+        }
+        return response.text();
+      })
+      .then(text => {
+        const lookup = Object.create(null);
+
+        for (const rawLine of text.split(/\r?\n/)) {
+          const path = rawLine.trim();
+          if (!path || path.startsWith('#')) continue;
+
+          const normalizedPath = path.replace(/\\/g, '/');
+          const lowerPath = normalizedPath.toLowerCase();
+          const destination = '../' + normalizedPath;
+
+          if (lowerPath.startsWith('p/')) {
+            // LDraw primitive references normally omit the p/ prefix.
+            lookup[lowerPath.slice(2)] = destination;
+            lookup[lowerPath] = destination;
+          } else if (lowerPath.startsWith('parts/s/')) {
+            // LDraw subpart references normally use s/<name>.
+            lookup[lowerPath.slice('parts/'.length)] = destination;
+            lookup[lowerPath] = destination;
+          }
+        }
+
+        return lookup;
+      })
+      .catch(error => {
+        // The viewer remains functional without the manifest. Three.js simply
+        // falls back to its normal parts -> p -> models probing behavior.
+        console.warn('LDraw path manifest unavailable; using loader fallback.', error);
+        return Object.create(null);
+      });
+  }
+
+  return ldrawPathLookupPromise;
+}
+
+async function createLDrawFileMap(modelText) {
+  const lookup = await loadLDrawPathLookup();
+  const embedded = embeddedFileNames(modelText);
+
+  return new Proxy(lookup, {
+    get(target, property, receiver) {
+      if (typeof property !== 'string') {
+        return Reflect.get(target, property, receiver);
+      }
+
+      const key = property.replace(/\\/g, '/').toLowerCase();
+
+      // Embedded MPD submodels must always win over library aliases.
+      if (embedded.has(key)) return undefined;
+
+      return target[property] ?? target[key];
+    },
+  });
+}
 
 // ═══════════════════════════════════════
 // SCENE
@@ -757,19 +837,21 @@ function updateViewerGround(box) {
 // ═══════════════════════════════════════
 // LOADER
 // ═══════════════════════════════════════
-async function createLoader() {
+async function createLoader(modelText = '') {
   const nextLoader = new LDrawLoader();
 
   // Required by Three.js r180 before any LDConfig parsing or model loading.
-  // Without this, preloadMaterials()/addDefaultMaterials() throws and .ldr/.mpd
-  // files never reach the viewer.
   nextLoader.setConditionalLineMaterial(LDrawConditionalLineMaterial);
   nextLoader.setPartsLibraryPath(PARTS_URL);
 
+  // Three.js normally finds LDraw dependencies by trying parts/, p/ and models/
+  // in sequence. Those failed probes are harmless but appear as noisy 404s in
+  // DevTools. The static manifest maps primitives/subparts to their real path
+  // so the first request succeeds.
+  nextLoader.setFileMap(await createLDrawFileMap(modelText));
+
   showLoad('Loading colors...', 'Preparing LDraw material library');
   try {
-    // LDrawLoader has a dedicated LDConfig parser. Parsing LDConfig as a model
-    // leaves the material library incomplete, so use the intended API here.
     await nextLoader.preloadMaterials(COLORS_URL);
   } catch (err) {
     console.warn('LDConfig preload failed. Falling back to loader defaults.', err);
@@ -779,9 +861,8 @@ async function createLoader() {
 }
 
 function normalizeStepDirectives(text) {
-  // three.js r162 understands STEP but not ROTSTEP. ROTSTEP is also a build
-  // boundary, so normalize it while intentionally ignoring its camera hint.
-  return text.replace(/^(\s*0\s+)ROTSTEP(?:\s+.*)?$/gim, '$1STEP');
+  // Treat ROTSTEP as a build boundary while intentionally ignoring its camera hint.
+    return text.replace(/^(\s*0\s+)ROTSTEP(?:\s+.*)?$/gim, '$1STEP');
 }
 
 function loadTextWithLoader(ldrawLoader, text) {
@@ -1119,7 +1200,7 @@ async function loadFile(content, name) {
   let nextModel = null;
 
   try {
-    const nextLoader = await createLoader();
+    const nextLoader = await createLoader(content);
     if (revision !== loadRevision) return;
 
     showLoad('Loading model...', name);
