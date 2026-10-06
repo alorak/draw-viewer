@@ -598,13 +598,12 @@ const LDRAW_COLORS = {
 };
 
 const OUTLINE_COLOR = 0x178a42;
-const MAIN_PAST_OPACITY = 0.46;
 const INSTR_ARROW_COLOR = 0x16a34a;
 
 // ═══════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════
-let scene, camera, renderer, controls, gridHelper;
+let scene, camera, renderer, controls, gridHelper, viewerFloor, viewerFloorMaterial;
 let model = null;
 let loader = null;
 let rawText = '';
@@ -628,9 +627,9 @@ function initScene() {
   const el = document.getElementById('canvas-container');
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(isDark ? 0x0a0a0f : 0xdde0e8);
+  scene.background = new THREE.Color(isDark ? 0x0f1116 : 0xf3f0e9);
 
-  camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100000);
+  camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100000);
   camera.position.set(150, 200, 250);
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -638,6 +637,8 @@ function initScene() {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NeutralToneMapping;
   renderer.toneMappingExposure = 0.9;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   el.appendChild(renderer.domElement);
 
   const pmrem = new THREE.PMREMGenerator(renderer);
@@ -647,17 +648,44 @@ function initScene() {
   room.dispose();
   pmrem.dispose();
 
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xdfe3e0, 0.5));
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xdfe3e0, 0.52));
 
-  const d1 = new THREE.DirectionalLight(0xffffff, 1.25);
+  const d1 = new THREE.DirectionalLight(0xffffff, 1.35);
   d1.position.set(-140, 260, 180);
+  d1.castShadow = true;
+  d1.shadow.mapSize.set(2048, 2048);
+  d1.shadow.camera.left = -1200;
+  d1.shadow.camera.right = 1200;
+  d1.shadow.camera.top = 1200;
+  d1.shadow.camera.bottom = -1200;
+  d1.shadow.camera.near = 1;
+  d1.shadow.camera.far = 4000;
+  d1.shadow.bias = -0.0002;
+  d1.shadow.normalBias = 0.8;
+  d1.shadow.radius = 3;
   scene.add(d1);
+
+  viewerFloorMaterial = new THREE.MeshStandardMaterial({
+    color: isDark ? 0x151820 : 0xf0ede5,
+    roughness: 0.95,
+    metalness: 0,
+  });
+  viewerFloor = new THREE.Mesh(
+    new THREE.PlaneGeometry(6000, 6000),
+    viewerFloorMaterial
+  );
+  viewerFloor.rotation.x = -Math.PI / 2;
+  viewerFloor.receiveShadow = true;
+  viewerFloor.visible = false;
+  scene.add(viewerFloor);
 
   rebuildGrid();
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.1;
+  controls.maxPolarAngle = Math.PI / 2 - 0.04;
+  controls.minDistance = 5;
 
   const resize = () => {
     const w = Math.max(1, el.clientWidth);
@@ -686,12 +714,43 @@ function rebuildGrid() {
   }
 
   gridHelper = new THREE.GridHelper(
-    400,
-    20,
-    isDark ? 0x2a2a3a : 0xb4bac8,
-    isDark ? 0x1a1a26 : 0xcbd0da
+    280,
+    28,
+    isDark ? 0x4a5060 : 0xc9c5bb,
+    isDark ? 0x343946 : 0xded9cf
   );
+  gridHelper.visible = false;
+
+  const materials = Array.isArray(gridHelper.material)
+    ? gridHelper.material
+    : [gridHelper.material];
+
+  for (const material of materials) {
+    material.transparent = true;
+    material.opacity = isDark ? 0.12 : 0.14;
+    material.depthWrite = false;
+  }
+
   scene.add(gridHelper);
+}
+
+function updateViewerGround(box) {
+  if (!viewerFloor || !gridHelper || box.isEmpty()) return;
+
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const groundY = box.min.y - Math.max(2.5, size.y * 0.03);
+
+  viewerFloor.position.set(center.x, groundY, center.z);
+  viewerFloor.visible = true;
+
+  // Keep only a restrained orientation grid immediately under the model.
+  // It should support depth perception, not visually compete with the model.
+  gridHelper.position.set(center.x, groundY + 0.03, center.z);
+  gridHelper.scale.setScalar(
+    THREE.MathUtils.clamp(Math.max(size.x, size.z) / 220, 0.45, 2.2)
+  );
+  gridHelper.visible = true;
 }
 
 // ═══════════════════════════════════════
@@ -825,7 +884,7 @@ function setRenderableFade(obj, factor) {
   materials.forEach(material => materialFade(material, factor));
 }
 
-function applyStepAppearance(root, stepIdx, pastOpacity) {
+function applyStepAppearance(root, stepIdx) {
   root.traverse(obj => {
     if (!isRenderable(obj)) return;
 
@@ -834,8 +893,13 @@ function applyStepAppearance(root, stepIdx, pastOpacity) {
       : 0;
 
     obj.visible = step <= stepIdx;
-    if (obj.visible) {
-      setRenderableFade(obj, step === stepIdx ? 1 : pastOpacity);
+    if (!obj.visible || !obj.material) return;
+
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const material of materials) {
+      // The regular 3D viewer should look like the actual model. Previous
+      // steps remain fully opaque and retain their original LDraw colours.
+      restoreBaseMaterial(material);
     }
   });
 }
@@ -1033,8 +1097,9 @@ function fitCameraToBox(targetCamera, box, direction, margin = 1.18) {
 function fitMainCamera() {
   if (!model) return;
   const box = getRenderableBounds(model, false);
-  const center = fitCameraToBox(camera, box, new THREE.Vector3(0.72, 0.58, 0.9), 1.24);
+  const center = fitCameraToBox(camera, box, new THREE.Vector3(0.72, 0.58, 0.9), 1.1);
   controls.target.copy(center);
+  updateViewerGround(box);
   controls.update();
 }
 
@@ -1136,7 +1201,7 @@ function goToStep(idx) {
   if (!model || total === 0) return;
 
   currentStep = Math.max(0, Math.min(Number(idx) || 0, total - 1));
-  applyStepAppearance(model, currentStep, MAIN_PAST_OPACITY);
+  applyStepAppearance(model, currentStep);
   updateUI();
   updateBOM();
 }
@@ -1243,8 +1308,24 @@ function applyTheme(theme, persist = false) {
   }
 
   if (scene) {
-    scene.background = new THREE.Color(isDark ? 0x0a0a0f : 0xdde0e8);
+    scene.background = new THREE.Color(isDark ? 0x0f1116 : 0xf3f0e9);
+
+    if (viewerFloorMaterial) {
+      viewerFloorMaterial.color.setHex(isDark ? 0x151820 : 0xf0ede5);
+      viewerFloorMaterial.needsUpdate = true;
+    }
+
+    const previousGridPosition = gridHelper?.position.clone();
+    const previousGridScale = gridHelper?.scale.clone();
+    const previousGridVisibility = Boolean(gridHelper?.visible);
+
     rebuildGrid();
+
+    if (gridHelper && previousGridPosition && previousGridScale) {
+      gridHelper.position.copy(previousGridPosition);
+      gridHelper.scale.copy(previousGridScale);
+      gridHelper.visible = previousGridVisibility;
+    }
   }
 
   if (persist) {
