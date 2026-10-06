@@ -40,7 +40,7 @@
     --grid-b: #1a1a26;
     --bom-bg: rgba(18,18,26,0.92);
     --bom-border: rgba(42,42,58,0.8);
-    --instr-bg: #c8d8e8;
+    --instr-bg: #f3f0e9;
     --instr-card: #ffffff;
     --instr-text: #1a1a2e;
     --instr-muted: #6a6a88;
@@ -562,8 +562,8 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
   }
 }
 </script>
@@ -571,6 +571,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 // ═══════════════════════════════════════
 // CONFIG
@@ -596,10 +597,8 @@ const LDRAW_COLORS = {
   450:'#B67B50',462:'#FFA500',484:'#8B0000',503:'#C8C8C8',
 };
 
-const OUTLINE_COLOR = 0x00bb44;
+const OUTLINE_COLOR = 0x178a42;
 const MAIN_PAST_OPACITY = 0.46;
-const INSTR_PREVIOUS_COLOR = 0xaeb8c4;
-const INSTR_PREVIOUS_LINE_COLOR = 0x7f8a96;
 const INSTR_ARROW_COLOR = 0x16a34a;
 
 // ═══════════════════════════════════════
@@ -637,18 +636,22 @@ function initScene() {
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMapping = THREE.NeutralToneMapping;
+  renderer.toneMappingExposure = 0.9;
   el.appendChild(renderer.domElement);
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.72));
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const room = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
+  scene.environmentIntensity = 0.22;
+  room.dispose();
+  pmrem.dispose();
 
-  const d1 = new THREE.DirectionalLight(0xffffff, 0.9);
-  d1.position.set(120, 220, 160);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xdfe3e0, 0.5));
+
+  const d1 = new THREE.DirectionalLight(0xffffff, 1.25);
+  d1.position.set(-140, 260, 180);
   scene.add(d1);
-
-  const d2 = new THREE.DirectionalLight(0x9aa8ff, 0.28);
-  d2.position.set(-120, 100, -120);
-  scene.add(d2);
 
   rebuildGrid();
 
@@ -762,6 +765,30 @@ function isolateMaterials(root) {
   });
 }
 
+function polishLDrawMaterials(root) {
+  root.traverse(obj => {
+    if (!obj.isMesh || !obj.material) return;
+
+    obj.castShadow = true;
+    obj.receiveShadow = true;
+
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const material of materials) {
+      if (!material.isMeshStandardMaterial && !material.isMeshPhysicalMaterial) continue;
+
+      // LDraw already provides the correct hue. Keep that exact color and only
+      // make the surface response less flat, similar to brickids.
+      if (!material.transparent && (material.metalness ?? 0) < 0.5) {
+        material.roughness = Math.max(0.3, material.roughness ?? 0.3);
+        material.metalness = 0;
+      }
+
+      material.envMapIntensity = 0.45;
+      material.needsUpdate = true;
+    }
+  });
+}
+
 function annotateBuildSteps(root) {
   function visit(obj, inheritedStep) {
     let step = inheritedStep;
@@ -843,28 +870,11 @@ function applyInstructionAppearance(root, stepIdx) {
     if (!obj.visible || !obj.material) return;
 
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
-
     for (const material of materials) {
+      // Keep every already-built piece in its original LDraw color. The current
+      // step is communicated by the exploded placement + green arrow, not by
+      // repainting the model.
       restoreBaseMaterial(material);
-
-      if (step < stepIdx) {
-        // Do not make the previous assembly see-through. Transparent "ghost"
-        // geometry made studs and back faces overlap and obscured what changed.
-        // Instead, keep it solid and neutral so the new piece is unmistakable.
-        if (material.color?.isColor) {
-          material.color.setHex(
-            obj.isLineSegments ? INSTR_PREVIOUS_LINE_COLOR : INSTR_PREVIOUS_COLOR
-          );
-        }
-
-        const wasTransparent = Boolean(material.userData?.__viewerBaseTransparent);
-        if (!wasTransparent) {
-          material.opacity = 1;
-          material.transparent = false;
-          material.depthWrite = true;
-        }
-        material.needsUpdate = true;
-      }
     }
   });
 }
@@ -1055,6 +1065,7 @@ async function loadFile(content, name) {
     // LDrawLoader intentionally reuses materials across parts. Clone them per
     // renderable so fading one build step cannot accidentally fade other steps.
     isolateMaterials(nextModel);
+    polishLDrawMaterials(nextModel);
     annotateBuildSteps(nextModel);
 
     const nextStepData = buildStepData(nextModel, content);
@@ -1448,6 +1459,7 @@ function createInstructionPlaceholders() {
 function cloneForInstructions(source) {
   const clone = source.clone(true);
   isolateMaterials(clone);
+  polishLDrawMaterials(clone);
   annotateBuildSteps(clone);
   return clone;
 }
@@ -1744,25 +1756,56 @@ async function generateInstructionCards() {
     offRenderer.setPixelRatio(1);
     offRenderer.setSize(width, height, false);
     offRenderer.outputColorSpace = THREE.SRGBColorSpace;
-    offRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    offRenderer.toneMapping = THREE.NeutralToneMapping;
+    offRenderer.toneMappingExposure = 0.9;
+    offRenderer.shadowMap.enabled = true;
+    offRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const instructionScene = new THREE.Scene();
-    instructionScene.background = new THREE.Color(0xc8d8e8);
+    instructionScene.background = new THREE.Color(0xf3f0e9);
 
-    instructionScene.add(new THREE.AmbientLight(0xffffff, 0.82));
+    const instructionPmrem = new THREE.PMREMGenerator(offRenderer);
+    const instructionRoom = new RoomEnvironment();
+    const instructionEnvironment = instructionPmrem.fromScene(instructionRoom, 0.04).texture;
+    instructionScene.environment = instructionEnvironment;
+    instructionScene.environmentIntensity = 0.22;
+    instructionRoom.dispose();
+    instructionPmrem.dispose();
 
-    const key = new THREE.DirectionalLight(0xffffff, 0.9);
-    key.position.set(120, 200, 160);
+    instructionScene.add(new THREE.HemisphereLight(0xffffff, 0xdfe3e0, 0.5));
+
+    const key = new THREE.DirectionalLight(0xffffff, 1.35);
+    key.position.set(-180, 300, 220);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.camera.left = -900;
+    key.shadow.camera.right = 900;
+    key.shadow.camera.top = 900;
+    key.shadow.camera.bottom = -900;
+    key.shadow.camera.near = 1;
+    key.shadow.camera.far = 2200;
+    key.shadow.bias = -0.00025;
+    key.shadow.normalBias = 0.8;
+    key.shadow.radius = 3;
     instructionScene.add(key);
 
-    const fill = new THREE.DirectionalLight(0x9aa8ff, 0.22);
-    fill.position.set(-100, 80, -100);
-    instructionScene.add(fill);
+    const shadowFloorMaterial = new THREE.MeshStandardMaterial({
+      color: 0xf3f0e9,
+      roughness: 0.95,
+      metalness: 0,
+    });
+    const shadowFloor = new THREE.Mesh(
+      new THREE.PlaneGeometry(5000, 5000),
+      shadowFloorMaterial
+    );
+    shadowFloor.rotation.x = -Math.PI / 2;
+    shadowFloor.receiveShadow = true;
+    instructionScene.add(shadowFloor);
 
     instructionModel = cloneForInstructions(model);
     instructionScene.add(instructionModel);
 
-    const snapshotCamera = new THREE.PerspectiveCamera(38, width / height, 0.1, 100000);
+    const snapshotCamera = new THREE.PerspectiveCamera(36, width / height, 0.1, 100000);
 
     for (let stepIdx = 0; stepIdx < stepData.length; stepIdx++) {
       if (revision !== instructionRevision) return;
@@ -1772,10 +1815,10 @@ async function generateInstructionCards() {
 
       // Capture the assembled target bounds before moving the current step.
       const assembledBox = getRenderableBounds(instructionModel, true);
+      shadowFloor.position.y = assembledBox.isEmpty() ? -20 : assembledBox.min.y - 2.5;
 
       // From step 2 onward, show the new part above its final location and draw
-      // a placement arrow. This makes the actual action clear instead of merely
-      // showing "old transparent geometry + new geometry" in the same pose.
+      // a placement arrow. Existing pieces keep their real LDraw colours.
       const exploded = explodeCurrentStep(instructionModel, stepIdx, assembledBox);
       instructionModel.updateMatrixWorld(true);
 
@@ -1785,11 +1828,8 @@ async function generateInstructionCards() {
         snapshotCamera,
         box,
         new THREE.Vector3(0.72, 0.58, 0.9),
-        1.16
+        1.12
       );
-
-      const outline = buildStepOutline(instructionModel, stepIdx);
-      if (outline) instructionScene.add(outline);
 
       const arrows = buildPlacementArrows(exploded.placements);
       if (arrows) instructionScene.add(arrows);
@@ -1800,11 +1840,6 @@ async function generateInstructionCards() {
       if (arrows) {
         instructionScene.remove(arrows);
         disposePlacementArrows(arrows);
-      }
-
-      if (outline) {
-        instructionScene.remove(outline);
-        disposeOutline(outline);
       }
 
       exploded.restore();
@@ -1827,7 +1862,7 @@ async function generateInstructionCards() {
 
         const currentKey = document.createElement('span');
         currentKey.className = 'current-key';
-        currentKey.textContent = stepIdx === 0 ? 'GREEN = START PART' : 'GREEN + ARROW = ADD';
+        currentKey.textContent = stepIdx === 0 ? 'START' : 'ARROW = ADD';
 
         label.appendChild(currentKey);
 
@@ -1835,7 +1870,7 @@ async function generateInstructionCards() {
           const divider = document.createTextNode('  ·  ');
           const previousKey = document.createElement('span');
           previousKey.className = 'previous-key';
-          previousKey.textContent = 'GRAY = ALREADY BUILT';
+          previousKey.textContent = 'COLORS = ORIGINAL';
           label.append(divider, previousKey);
         }
 
