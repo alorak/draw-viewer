@@ -242,7 +242,9 @@
     position: absolute; top: 12px; right: 12px; z-index: 5;
     display: none; background: var(--bom-bg);
     border: 1px solid var(--bom-border); border-radius: 10px;
-    padding: 10px 14px; backdrop-filter: blur(10px); max-width: 260px;
+    padding: 10px 14px; backdrop-filter: blur(10px);
+    width: min(286px, calc(100vw - 24px));
+    max-width: 286px;
   }
   .bom-panel.visible { display: block; }
 
@@ -266,6 +268,51 @@
 
   .bom-name { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-secondary); }
   .bom-qty { font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; color: var(--accent); margin-left: 2px; }
+
+  .bom-placement {
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px solid var(--bom-border);
+  }
+
+  .bom-placement-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; margin-bottom: 6px;
+  }
+
+  .bom-placement-title {
+    font-size: 9px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+
+  .bom-placement-hint {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px; color: var(--text-muted);
+  }
+
+  .bom-preview {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: #f3f0e9;
+  }
+
+  .bom-preview img {
+    width: 100%; height: 100%;
+    display: block; object-fit: cover;
+  }
+
+  .bom-preview-status {
+    position: absolute; inset: 0;
+    display: grid; place-items: center;
+    padding: 10px; text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; color: #74706a;
+    background: #f3f0e9;
+  }
 
   /* ─── Hints ─── */
   .hints {
@@ -474,6 +521,13 @@
     footer .progress { max-width: none; }
     #btn-first, #btn-last { display: none; }
     .hints { display: none !important; }
+    .bom-panel {
+      width: min(205px, calc(100vw - 18px));
+      max-width: 205px;
+      padding: 8px 9px;
+      top: 9px; right: 9px;
+    }
+    .bom-preview { aspect-ratio: 4 / 3; }
     .instr-grid { padding: 12px 8px 24px; gap: 14px; }
     .instr-card-header { padding: 10px; gap: 8px; }
     .instr-step-num { font-size: 26px; min-width: 30px; }
@@ -529,6 +583,15 @@
     <div class="bom-panel" id="bom-panel">
       <div class="bom-title">Parts in this step</div>
       <div class="bom-list" id="bom-list"></div>
+      <div class="bom-placement">
+        <div class="bom-placement-head">
+          <span class="bom-placement-title">Placement</span>
+          <span class="bom-placement-hint">green arrow → target</span>
+        </div>
+        <div class="bom-preview" id="bom-preview" aria-live="polite">
+          <div class="bom-preview-status">Placement preview</div>
+        </div>
+      </div>
     </div>
 
     <div class="hints" id="hints">
@@ -621,6 +684,8 @@ let instructionRevision = 0;
 let instructionReady = false;
 let instructionGenerating = false;
 let instructionObjectUrls = [];
+let placementPreviewRevision = 0;
+let placementPreviewContext = null;
 let ldrawPathLookupPromise = null;
 
 // ═══════════════════════════════════════
@@ -1256,6 +1321,7 @@ async function loadFile(content, name) {
     fitMainCamera();
 
     clearInstructionCache();
+    resetPlacementPreview();
 
     document.getElementById('drop-zone').classList.add('hidden');
     document.getElementById('footer').classList.remove('disabled');
@@ -1372,28 +1438,29 @@ function updateBOM() {
     empty.style.cssText = 'font-size:11px;color:var(--text-muted)';
     empty.textContent = 'No part info';
     panel.appendChild(empty);
-    return;
+  } else {
+    for (const { color, partId, qty } of groupedPartRefs(refs)) {
+      const item = document.createElement('div');
+      item.className = 'bom-item';
+
+      const swatch = document.createElement('div');
+      swatch.className = 'bom-color';
+      swatch.style.background = colorToCss(color);
+
+      const name = document.createElement('span');
+      name.className = 'bom-name';
+      name.textContent = normalizedPartName(partId);
+
+      const quantity = document.createElement('span');
+      quantity.className = 'bom-qty';
+      quantity.textContent = '×' + qty;
+
+      item.append(swatch, name, quantity);
+      panel.appendChild(item);
+    }
   }
 
-  for (const { color, partId, qty } of groupedPartRefs(refs)) {
-    const item = document.createElement('div');
-    item.className = 'bom-item';
-
-    const swatch = document.createElement('div');
-    swatch.className = 'bom-color';
-    swatch.style.background = colorToCss(color);
-
-    const name = document.createElement('span');
-    name.className = 'bom-name';
-    name.textContent = normalizedPartName(partId);
-
-    const quantity = document.createElement('span');
-    quantity.className = 'bom-qty';
-    quantity.textContent = '×' + qty;
-
-    item.append(swatch, name, quantity);
-    panel.appendChild(item);
-  }
+  renderBomPlacementPreview(currentStep);
 }
 
 // ═══════════════════════════════════════
@@ -1639,6 +1706,196 @@ function createInstructionPlaceholders() {
     render.appendChild(generating);
     card.append(header, render);
     grid.appendChild(card);
+  }
+}
+
+function resetPlacementPreview() {
+  placementPreviewRevision += 1;
+
+  if (!placementPreviewContext) return;
+
+  if (placementPreviewContext.model) {
+    placementPreviewContext.scene.remove(placementPreviewContext.model);
+    disposeCloneMaterials(placementPreviewContext.model);
+  }
+
+  placementPreviewContext.environment?.dispose();
+  placementPreviewContext.renderer?.dispose();
+  placementPreviewContext = null;
+}
+
+function createPlacementPreviewContext() {
+  if (!model) return null;
+  if (placementPreviewContext) return placementPreviewContext;
+
+  const width = 360;
+  const height = 225;
+
+  const previewRenderer = new THREE.WebGLRenderer({
+    antialias: true,
+    preserveDrawingBuffer: true,
+  });
+  previewRenderer.setPixelRatio(1);
+  previewRenderer.setSize(width, height, false);
+  previewRenderer.outputColorSpace = THREE.SRGBColorSpace;
+  previewRenderer.toneMapping = THREE.NeutralToneMapping;
+  previewRenderer.toneMappingExposure = 0.92;
+
+  const previewScene = new THREE.Scene();
+  previewScene.background = new THREE.Color(0xf3f0e9);
+
+  const pmrem = new THREE.PMREMGenerator(previewRenderer);
+  const room = new RoomEnvironment();
+  const environment = pmrem.fromScene(room, 0.04).texture;
+  previewScene.environment = environment;
+  previewScene.environmentIntensity = 0.22;
+  room.dispose();
+  pmrem.dispose();
+
+  previewScene.add(new THREE.HemisphereLight(0xffffff, 0xdfe3e0, 0.58));
+
+  const key = new THREE.DirectionalLight(0xffffff, 1.25);
+  key.position.set(-160, 240, 190);
+  previewScene.add(key);
+
+  const previewModel = cloneForInstructions(model);
+  previewScene.add(previewModel);
+
+  const previewCamera = new THREE.PerspectiveCamera(34, width / height, 0.1, 100000);
+
+  placementPreviewContext = {
+    renderer: previewRenderer,
+    scene: previewScene,
+    camera: previewCamera,
+    model: previewModel,
+    environment,
+  };
+
+  return placementPreviewContext;
+}
+
+function placementFocusBox(root, placements) {
+  const focus = new THREE.Box3();
+
+  for (const placement of placements) {
+    const targetBox = new THREE.Box3().setFromCenterAndSize(
+      placement.targetCenter,
+      placement.targetSize
+    );
+    focus.union(targetBox);
+
+    if (placement.explodedCenter && placement.explodedSize) {
+      const explodedBox = new THREE.Box3().setFromCenterAndSize(
+        placement.explodedCenter,
+        placement.explodedSize
+      );
+      focus.union(explodedBox);
+    }
+  }
+
+  if (focus.isEmpty()) {
+    focus.copy(getRenderableBounds(root, true));
+  }
+
+  if (!focus.isEmpty()) {
+    const size = focus.getSize(new THREE.Vector3());
+    const padding = THREE.MathUtils.clamp(size.length() * 0.18, 12, 42);
+    focus.expandByScalar(padding);
+  }
+
+  return focus;
+}
+
+function placementPreviewDirection(placements) {
+  if (!placements.length) {
+    return new THREE.Vector3(0.72, 0.58, 0.9);
+  }
+
+  const undersideCount = placements.filter(
+    placement => placement.verticalDirection < 0
+  ).length;
+
+  if (undersideCount === placements.length) {
+    // If every new piece attaches underneath, show the small preview from
+    // below so the attachment point is actually visible.
+    return new THREE.Vector3(0.72, -0.52, 0.9);
+  }
+
+  if (undersideCount > 0) {
+    // Mixed top/bottom placements: keep a shallower neutral angle.
+    return new THREE.Vector3(0.78, 0.18, 0.9);
+  }
+
+  return new THREE.Vector3(0.72, 0.58, 0.9);
+}
+
+async function renderBomPlacementPreview(stepIdx) {
+  const preview = document.getElementById('bom-preview');
+  if (!preview || !model) return;
+
+  const revision = ++placementPreviewRevision;
+
+  const status = document.createElement('div');
+  status.className = 'bom-preview-status';
+  status.textContent = 'Rendering placement…';
+  preview.replaceChildren(status);
+
+  // Yield once so quick step navigation can supersede an unnecessary render.
+  await new Promise(resolve => requestAnimationFrame(resolve));
+  if (revision !== placementPreviewRevision) return;
+
+  const context = createPlacementPreviewContext();
+  if (!context || revision !== placementPreviewRevision) return;
+
+  const previewModel = context.model;
+  let exploded = null;
+  let arrows = null;
+
+  try {
+    applyInstructionAppearance(previewModel, stepIdx);
+    previewModel.updateMatrixWorld(true);
+
+    const assembledBox = getRenderableBounds(previewModel, true);
+    exploded = explodeCurrentStep(previewModel, stepIdx, assembledBox);
+    previewModel.updateMatrixWorld(true);
+
+    const focusBox = placementFocusBox(previewModel, exploded.placements);
+    fitCameraToBox(
+      context.camera,
+      focusBox,
+      placementPreviewDirection(exploded.placements),
+      1.08
+    );
+
+    arrows = buildPlacementArrows(exploded.placements);
+    if (arrows) context.scene.add(arrows);
+
+    context.renderer.render(context.scene, context.camera);
+
+    if (revision !== placementPreviewRevision) return;
+
+    const image = document.createElement('img');
+    image.src = context.renderer.domElement.toDataURL('image/png');
+    image.alt = 'Placement preview for build step ' + (stepIdx + 1);
+
+    preview.replaceChildren(image);
+
+  } catch (error) {
+    console.warn('Placement preview failed:', error);
+
+    if (revision === placementPreviewRevision) {
+      const errorState = document.createElement('div');
+      errorState.className = 'bom-preview-status';
+      errorState.textContent = 'Preview unavailable';
+      preview.replaceChildren(errorState);
+    }
+  } finally {
+    if (arrows) {
+      context.scene.remove(arrows);
+      disposePlacementArrows(arrows);
+    }
+
+    exploded?.restore();
   }
 }
 
