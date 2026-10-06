@@ -765,7 +765,12 @@ function initScene() {
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.1;
-  controls.maxPolarAngle = Math.PI / 2 - 0.04;
+
+  // Allow a complete orbit around the model, including a true underside view.
+  // Keep a tiny epsilon away from the exact poles to avoid the spherical-camera
+  // singularity inside OrbitControls.
+  controls.minPolarAngle = 0.001;
+  controls.maxPolarAngle = Math.PI - 0.001;
   controls.minDistance = 5;
 
   const resize = () => {
@@ -783,6 +788,7 @@ function initScene() {
   (function animate() {
     requestAnimationFrame(animate);
     controls.update();
+    updateViewerGroundVisibility();
     renderer.render(scene, camera);
   })();
 }
@@ -832,6 +838,18 @@ function updateViewerGround(box) {
     THREE.MathUtils.clamp(Math.max(size.x, size.z) / 220, 0.45, 2.2)
   );
   gridHelper.visible = true;
+}
+
+function updateViewerGroundVisibility() {
+  if (!viewerFloor || !gridHelper || !controls) return;
+
+  // The floor is useful when looking from above, but it becomes a visual wall
+  // when the camera moves under the model. Hide it automatically once the
+  // camera crosses below the orbit target, then restore it when coming back up.
+  const showGround = camera.position.y >= controls.target.y;
+
+  viewerFloor.visible = showGround && Boolean(model);
+  gridHelper.visible = showGround && Boolean(model);
 }
 
 // ═══════════════════════════════════════
