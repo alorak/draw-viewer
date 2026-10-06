@@ -1695,6 +1695,106 @@ function worldDeltaToLocal(parent, worldDelta) {
   return moved.sub(origin);
 }
 
+function collectPreviousPlacementBoxes(root, stepIdx) {
+  const groups = [];
+
+  root.traverse(group => {
+    if (!group.isGroup || group === root) return;
+
+    const type = String(group.userData?.type || '');
+    const step = Number(group.userData?.buildingStep);
+
+    if (
+      /^(?:Part|Unofficial_Part)$/i.test(type) &&
+      Number.isFinite(step) &&
+      step < stepIdx
+    ) {
+      groups.push(group);
+    }
+  });
+
+  const groupSet = new Set(groups);
+  const topLevelGroups = groups.filter(group => {
+    let parent = group.parent;
+    while (parent && parent !== root) {
+      if (groupSet.has(parent)) return false;
+      parent = parent.parent;
+    }
+    return true;
+  });
+
+  return topLevelGroups
+    .map(group => {
+      const box = new THREE.Box3().setFromObject(group);
+      return box.isEmpty() ? null : { group, box };
+    })
+    .filter(Boolean);
+}
+
+function horizontalOverlapScore(a, b) {
+  const overlapX = Math.max(0, Math.min(a.max.x, b.max.x) - Math.max(a.min.x, b.min.x));
+  const overlapZ = Math.max(0, Math.min(a.max.z, b.max.z) - Math.max(a.min.z, b.min.z));
+  if (overlapX <= 0 || overlapZ <= 0) return 0;
+
+  const area = overlapX * overlapZ;
+  const aArea = Math.max(1, (a.max.x - a.min.x) * (a.max.z - a.min.z));
+  const bArea = Math.max(1, (b.max.x - b.min.x) * (b.max.z - b.min.z));
+
+  return area / Math.min(aArea, bArea);
+}
+
+function detectPlacementVerticalDirection(targetBox, previousBoxes, assemblyBox) {
+  let best = null;
+
+  for (const { box } of previousBoxes) {
+    const overlap = horizontalOverlapScore(targetBox, box);
+    if (overlap < 0.025) continue;
+
+    // New part above old part: current bottom touches previous top.
+    const aboveGap = Math.abs(targetBox.min.y - box.max.y);
+
+    // New part below old part: current top touches previous bottom.
+    const belowGap = Math.abs(targetBox.max.y - box.min.y);
+
+    const aboveScore = aboveGap - Math.min(overlap, 1) * 4;
+    const belowScore = belowGap - Math.min(overlap, 1) * 4;
+
+    if (!best || aboveScore < best.score) {
+      best = { direction: 1, score: aboveScore, gap: aboveGap, overlap };
+    }
+
+    if (!best || belowScore < best.score) {
+      best = { direction: -1, score: belowScore, gap: belowGap, overlap };
+    }
+  }
+
+  if (best) {
+    // Typical LEGO stud/socket contact is within a few LDU, but allow some
+    // tolerance for sloped/technic geometry and bounding-box overhang.
+    const targetHeight = Math.max(1, targetBox.max.y - targetBox.min.y);
+    const contactTolerance = Math.max(12, Math.min(28, targetHeight * 0.5));
+
+    if (best.gap <= contactTolerance) {
+      return best.direction;
+    }
+  }
+
+  // Fallback for unusual geometry: if the part's final center is clearly below
+  // the already-built assembly center, present it as an underside attachment.
+  if (!assemblyBox.isEmpty()) {
+    const targetCenterY = (targetBox.min.y + targetBox.max.y) * 0.5;
+    const assemblyCenterY = (assemblyBox.min.y + assemblyBox.max.y) * 0.5;
+    const assemblyHeight = Math.max(1, assemblyBox.max.y - assemblyBox.min.y);
+
+    if (targetCenterY < assemblyCenterY - assemblyHeight * 0.08) {
+      return -1;
+    }
+  }
+
+  // Ambiguous/side-mounted pieces retain the conventional top-down view.
+  return 1;
+}
+
 function explodeCurrentStep(root, stepIdx, assemblyBox) {
   if (stepIdx === 0) {
     return { placements: [], restore() {} };
@@ -1707,12 +1807,13 @@ function explodeCurrentStep(root, stepIdx, assemblyBox) {
     return { placements: [], restore() {} };
   }
 
+  const previousBoxes = collectPreviousPlacementBoxes(root, stepIdx);
   const assemblySize = assemblyBox.getSize(new THREE.Vector3());
   const horizontalSpan = Math.max(assemblySize.x, assemblySize.z);
 
   // One LEGO plate is 8 LDU high, one brick is 24 LDU. Keep enough clearance
   // to visually separate the new piece without throwing it far out of frame.
-  const lift = THREE.MathUtils.clamp(
+  const separation = THREE.MathUtils.clamp(
     Math.max(34, assemblySize.y * 0.8, horizontalSpan * 0.16),
     34,
     86
@@ -1729,8 +1830,14 @@ function explodeCurrentStep(root, stepIdx, assemblyBox) {
     const targetCenter = targetBox.getCenter(new THREE.Vector3());
     const targetSize = targetBox.getSize(new THREE.Vector3());
     const originalPosition = group.position.clone();
+    const verticalDirection = detectPlacementVerticalDirection(
+      targetBox,
+      previousBoxes,
+      assemblyBox
+    );
 
-    const localDelta = worldDeltaToLocal(group.parent, new THREE.Vector3(0, lift, 0));
+    const worldOffset = new THREE.Vector3(0, separation * verticalDirection, 0);
+    const localDelta = worldDeltaToLocal(group.parent, worldOffset);
     group.position.add(localDelta);
 
     placements.push({
@@ -1738,6 +1845,7 @@ function explodeCurrentStep(root, stepIdx, assemblyBox) {
       originalPosition,
       targetCenter,
       targetSize,
+      verticalDirection,
     });
   }
 
@@ -1781,8 +1889,9 @@ function buildPlacementArrows(placements) {
       placement.targetSize?.y || 0
     ) * 0.5;
 
-    // Start just below the exploded part and stop just before the final part
-    // center so the arrow does not visually cut through either object.
+    // Move from the exploded part toward its final location. This works in
+    // both directions: downward for top-mounted pieces and upward for pieces
+    // that attach underneath the existing assembly.
     const startGap = Math.max(5, Math.min(16, partHalfHeight + 4));
     const endGap = 8;
     const origin = startCenter.clone().addScaledVector(direction, startGap);
@@ -1983,15 +2092,18 @@ async function generateInstructionCards() {
 
       // Capture the assembled target bounds before moving the current step.
       const assembledBox = getRenderableBounds(instructionModel, true);
-      shadowFloor.position.y = assembledBox.isEmpty() ? -20 : assembledBox.min.y - 2.5;
 
-      // From step 2 onward, show the new part above its final location and draw
-      // a placement arrow. Existing pieces keep their real LDraw colours.
+      // Explode each new part from the side it actually attaches from:
+      // above for top attachments, below for underside attachments.
       const exploded = explodeCurrentStep(instructionModel, stepIdx, assembledBox);
       instructionModel.updateMatrixWorld(true);
 
-      // Frame both the previous assembly and the exploded current part.
+      // Frame both the previous assembly and every exploded current part.
       const box = getRenderableBounds(instructionModel, true);
+
+      // If a piece is shown below the assembly, keep the shadow plane below it
+      // rather than letting the floor occlude the exploded underside piece.
+      shadowFloor.position.y = box.isEmpty() ? -20 : box.min.y - 2.5;
       fitCameraToBox(
         snapshotCamera,
         box,
