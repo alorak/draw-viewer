@@ -364,15 +364,65 @@
   .instr-header {
     position: sticky; top: 0; z-index: 51;
     display: flex; align-items: center; justify-content: space-between;
-    padding: 12px 20px;
+    gap: 12px;
+    padding: 10px 16px;
     background: #fff;
     border-bottom: 2px solid var(--instr-border);
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   }
 
   .instr-header-title {
+    min-width: 0;
     font-size: 16px; font-weight: 700; color: var(--instr-text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+
+  .instr-header-actions {
+    display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  }
+
+  .instr-zoom {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px;
+    border: 1px solid var(--instr-border);
+    border-radius: 7px;
+    background: #f5f5f8;
+  }
+
+  .instr-zoom-btn {
+    min-width: 30px; height: 30px;
+    display: inline-grid; place-items: center;
+    border: 0; border-radius: 5px;
+    background: transparent;
+    color: var(--instr-text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px; font-weight: 700;
+    cursor: pointer;
+  }
+
+  .instr-zoom-btn:hover:not(:disabled) { background: #e8e8ef; }
+  .instr-zoom-btn:disabled { opacity: 0.35; cursor: default; }
+
+  .instr-zoom-value {
+    min-width: 46px;
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 700;
+    color: var(--instr-muted);
+  }
+
+  .instr-overview-btn {
+    height: 30px;
+    padding: 0 9px;
+    border: 0; border-radius: 5px;
+    background: transparent;
+    color: var(--instr-text);
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px; font-weight: 650;
+    cursor: pointer;
+  }
+
+  .instr-overview-btn:hover { background: #e8e8ef; }
 
   .instr-close-btn {
     padding: 6px 14px; border-radius: 6px;
@@ -384,12 +434,55 @@
   .instr-close-btn:hover { background: #e0e0e8; }
 
   .instr-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
-    padding: 24px 20px 40px;
-    max-width: 820px;
+    --instr-card-width: 460px;
+    display: grid;
+    grid-template-columns: repeat(
+      auto-fit,
+      minmax(min(100%, var(--instr-card-width)), 1fr)
+    );
+    align-items: start;
+    gap: 18px;
+    padding: 18px 18px 36px;
+    max-width: 1820px;
     margin: 0 auto;
+  }
+
+  .instr-grid.instr-compact .instr-card-header {
+    gap: 8px;
+    padding: 9px 10px 7px;
+  }
+
+  .instr-grid.instr-compact .instr-step-num {
+    font-size: 25px;
+    min-width: 28px;
+  }
+
+  .instr-grid.instr-compact .instr-bom-box {
+    gap: 4px;
+    padding: 5px 6px;
+  }
+
+  .instr-grid.instr-compact .instr-bom-entry {
+    gap: 4px;
+    padding: 4px 6px;
+  }
+
+  .instr-grid.instr-compact .instr-bom-swatch {
+    width: 16px; height: 16px;
+  }
+
+  .instr-grid.instr-compact .instr-bom-qty {
+    font-size: 10px;
+  }
+
+  .instr-grid.instr-compact .instr-bom-label {
+    font-size: 8px;
+  }
+
+  .instr-grid.instr-compact .instr-action-label {
+    left: 7px; bottom: 7px;
+    padding: 4px 6px;
+    font-size: 8px;
   }
 
   /* Each step card */
@@ -528,7 +621,22 @@
       top: 9px; right: 9px;
     }
     .bom-preview { aspect-ratio: 4 / 3; }
-    .instr-grid { padding: 12px 8px 24px; gap: 14px; }
+    .instr-header {
+      align-items: flex-start;
+      padding: 8px;
+    }
+    .instr-header-title { font-size: 13px; padding-top: 7px; }
+    .instr-header-actions { gap: 5px; }
+    .instr-overview-btn { display: none; }
+    .instr-zoom { gap: 1px; padding: 2px; }
+    .instr-zoom-btn { min-width: 28px; height: 28px; }
+    .instr-zoom-value { min-width: 38px; font-size: 9px; }
+    .instr-close-btn { padding: 6px 8px; }
+    .instr-grid {
+      --instr-card-width: 100% !important;
+      padding: 10px 7px 22px;
+      gap: 12px;
+    }
     .instr-card-header { padding: 10px; gap: 8px; }
     .instr-step-num { font-size: 26px; min-width: 30px; }
     .instr-bom-entry { padding: 4px 7px; }
@@ -617,7 +725,15 @@
 <div class="instr-overlay" id="instr-overlay">
   <div class="instr-header">
     <div class="instr-header-title" id="instr-title">Build Instructions</div>
-    <button class="instr-close-btn" onclick="closeInstructions()">✕ Close</button>
+    <div class="instr-header-actions">
+      <div class="instr-zoom" aria-label="Instruction zoom">
+        <button class="instr-zoom-btn" id="instr-zoom-out" type="button" onclick="zoomInstructionsOut()" title="Show more steps">−</button>
+        <span class="instr-zoom-value" id="instr-zoom-value">70%</span>
+        <button class="instr-zoom-btn" id="instr-zoom-in" type="button" onclick="zoomInstructionsIn()" title="Show larger steps">+</button>
+        <button class="instr-overview-btn" type="button" onclick="setInstructionOverview()" title="Show as many steps as possible">▦ Overview</button>
+      </div>
+      <button class="instr-close-btn" onclick="closeInstructions()">✕ Close</button>
+    </div>
   </div>
   <div class="instr-grid" id="instr-grid"></div>
 </div>
@@ -679,6 +795,27 @@ let isDark = document.documentElement.dataset.theme === 'dark';
 let stepData = [];
 let currentStep = 0;
 let loadRevision = 0;
+
+const INSTRUCTION_ZOOM_STORAGE_KEY = 'draw-viewer-instruction-zoom';
+const INSTRUCTION_ZOOM_LEVELS = [45, 55, 70, 85, 100, 120];
+const INSTRUCTION_CARD_WIDTHS = {
+  45: 300,
+  55: 360,
+  70: 460,
+  85: 580,
+  100: 740,
+  120: 940,
+};
+
+let instructionZoom = 70;
+try {
+  const savedInstructionZoom = Number(localStorage.getItem(INSTRUCTION_ZOOM_STORAGE_KEY));
+  if (INSTRUCTION_ZOOM_LEVELS.includes(savedInstructionZoom)) {
+    instructionZoom = savedInstructionZoom;
+  }
+} catch (error) {
+  // Keep the default overview-friendly zoom when storage is unavailable.
+}
 
 let instructionRevision = 0;
 let instructionReady = false;
@@ -1582,7 +1719,18 @@ mainArea.addEventListener('drop', event => {
 // ═══════════════════════════════════════
 document.addEventListener('keydown', event => {
   if (document.getElementById('instr-overlay').classList.contains('visible')) {
-    if (event.key === 'Escape') closeInstructions();
+    if (event.key === 'Escape') {
+      closeInstructions();
+    } else if (event.key === '+' || event.key === '=') {
+      event.preventDefault();
+      zoomInstructionsIn();
+    } else if (event.key === '-' || event.key === '_') {
+      event.preventDefault();
+      zoomInstructionsOut();
+    } else if (event.key === '0') {
+      event.preventDefault();
+      setInstructionZoom(70);
+    }
     return;
   }
 
@@ -1604,12 +1752,62 @@ document.addEventListener('keydown', event => {
 // ═══════════════════════════════════════
 // INSTRUCTION MODE
 // ═══════════════════════════════════════
+function setInstructionZoom(value, persist = true) {
+  const requested = Number(value);
+  const nearest = INSTRUCTION_ZOOM_LEVELS.reduce((best, level) =>
+    Math.abs(level - requested) < Math.abs(best - requested) ? level : best
+  );
+
+  instructionZoom = nearest;
+
+  const grid = document.getElementById('instr-grid');
+  const cardWidth = INSTRUCTION_CARD_WIDTHS[nearest] || 460;
+  grid.style.setProperty('--instr-card-width', cardWidth + 'px');
+  grid.classList.toggle('instr-compact', nearest <= 70);
+
+  const valueLabel = document.getElementById('instr-zoom-value');
+  if (valueLabel) valueLabel.textContent = nearest + '%';
+
+  const index = INSTRUCTION_ZOOM_LEVELS.indexOf(nearest);
+  const zoomOut = document.getElementById('instr-zoom-out');
+  const zoomIn = document.getElementById('instr-zoom-in');
+
+  if (zoomOut) zoomOut.disabled = index <= 0;
+  if (zoomIn) zoomIn.disabled = index >= INSTRUCTION_ZOOM_LEVELS.length - 1;
+
+  if (persist) {
+    try {
+      localStorage.setItem(INSTRUCTION_ZOOM_STORAGE_KEY, String(nearest));
+    } catch (error) {
+      console.warn('Could not persist instruction zoom:', error);
+    }
+  }
+}
+
+function zoomInstructionsOut() {
+  const index = INSTRUCTION_ZOOM_LEVELS.indexOf(instructionZoom);
+  if (index > 0) setInstructionZoom(INSTRUCTION_ZOOM_LEVELS[index - 1]);
+}
+
+function zoomInstructionsIn() {
+  const index = INSTRUCTION_ZOOM_LEVELS.indexOf(instructionZoom);
+  if (index >= 0 && index < INSTRUCTION_ZOOM_LEVELS.length - 1) {
+    setInstructionZoom(INSTRUCTION_ZOOM_LEVELS[index + 1]);
+  }
+}
+
+function setInstructionOverview() {
+  setInstructionZoom(INSTRUCTION_ZOOM_LEVELS[0]);
+}
+
 function openInstructions() {
   if (!model || stepData.length === 0) return;
 
   document.getElementById('instr-overlay').classList.add('visible');
   document.getElementById('instr-title').textContent =
     'Build Instructions — ' + fileName.replace(/\.[^.]+$/, '');
+
+  setInstructionZoom(instructionZoom, false);
 
   if (!instructionReady && !instructionGenerating) {
     generateInstructionCards();
@@ -2468,6 +2666,10 @@ window.goToStep = goToStep;
 window.toggleTheme = toggleTheme;
 window.openInstructions = openInstructions;
 window.closeInstructions = closeInstructions;
+window.zoomInstructionsOut = zoomInstructionsOut;
+window.zoomInstructionsIn = zoomInstructionsIn;
+window.setInstructionOverview = setInstructionOverview;
+window.setInstructionZoom = setInstructionZoom;
 Object.defineProperty(window, '_totalSteps', { get: () => stepData.length });
 
 // Synchronize the button with the theme already selected by the early
