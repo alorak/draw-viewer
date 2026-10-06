@@ -412,6 +412,32 @@
     display: block;
   }
 
+  .instr-action-label {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    z-index: 2;
+    padding: 6px 9px;
+    border-radius: 7px;
+    background: rgba(255,255,255,0.92);
+    border: 1px solid #c9d0dc;
+    color: #28313a;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    pointer-events: none;
+  }
+
+  .instr-action-label .current-key {
+    color: #16823c;
+  }
+
+  .instr-action-label .previous-key {
+    color: #77818d;
+  }
+
   .instr-generating {
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
@@ -557,7 +583,9 @@ const LDRAW_COLORS = {
 
 const OUTLINE_COLOR = 0x00bb44;
 const MAIN_PAST_OPACITY = 0.46;
-const INSTR_PAST_OPACITY = 0.34;
+const INSTR_PREVIOUS_COLOR = 0xaeb8c4;
+const INSTR_PREVIOUS_LINE_COLOR = 0x7f8a96;
+const INSTR_ARROW_COLOR = 0x16a34a;
 
 // ═══════════════════════════════════════
 // STATE
@@ -713,6 +741,7 @@ function isolateMaterials(root) {
       material.userData.__viewerBaseOpacity = Number.isFinite(material.opacity) ? material.opacity : 1;
       material.userData.__viewerBaseTransparent = Boolean(material.transparent);
       material.userData.__viewerBaseDepthWrite = material.depthWrite !== false;
+      material.userData.__viewerBaseColorHex = material.color?.isColor ? material.color.getHex() : null;
     }
   });
 }
@@ -764,6 +793,62 @@ function applyStepAppearance(root, stepIdx, pastOpacity) {
     obj.visible = step <= stepIdx;
     if (obj.visible) {
       setRenderableFade(obj, step === stepIdx ? 1 : pastOpacity);
+    }
+  });
+}
+
+function restoreBaseMaterial(material) {
+  const baseOpacity = Number.isFinite(material.userData?.__viewerBaseOpacity)
+    ? material.userData.__viewerBaseOpacity
+    : 1;
+  const baseTransparent = Boolean(material.userData?.__viewerBaseTransparent);
+  const baseDepthWrite = material.userData?.__viewerBaseDepthWrite !== false;
+  const baseColorHex = material.userData?.__viewerBaseColorHex;
+
+  if (material.color?.isColor && Number.isFinite(baseColorHex)) {
+    material.color.setHex(baseColorHex);
+  }
+
+  material.opacity = baseOpacity;
+  material.transparent = baseTransparent;
+  material.depthWrite = baseDepthWrite;
+  material.needsUpdate = true;
+}
+
+function applyInstructionAppearance(root, stepIdx) {
+  root.traverse(obj => {
+    if (!isRenderable(obj)) return;
+
+    const step = Number.isFinite(obj.userData?.__viewerBuildStep)
+      ? obj.userData.__viewerBuildStep
+      : 0;
+
+    obj.visible = step <= stepIdx;
+    if (!obj.visible || !obj.material) return;
+
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+
+    for (const material of materials) {
+      restoreBaseMaterial(material);
+
+      if (step < stepIdx) {
+        // Do not make the previous assembly see-through. Transparent "ghost"
+        // geometry made studs and back faces overlap and obscured what changed.
+        // Instead, keep it solid and neutral so the new piece is unmistakable.
+        if (material.color?.isColor) {
+          material.color.setHex(
+            obj.isLineSegments ? INSTR_PREVIOUS_LINE_COLOR : INSTR_PREVIOUS_COLOR
+          );
+        }
+
+        const wasTransparent = Boolean(material.userData?.__viewerBaseTransparent);
+        if (!wasTransparent) {
+          material.opacity = 1;
+          material.transparent = false;
+          material.depthWrite = true;
+        }
+        material.needsUpdate = true;
+      }
     }
   });
 }
@@ -1343,6 +1428,187 @@ function disposeCloneMaterials(root) {
   materials.forEach(material => material.dispose());
 }
 
+function collectStepPlacementGroups(root, stepIdx) {
+  const candidates = [];
+
+  root.traverse(group => {
+    if (!group.isGroup || group === root) return;
+
+    const type = String(group.userData?.type || '');
+    const step = Number(group.userData?.buildingStep);
+
+    if (/^(?:Part|Unofficial_Part)$/i.test(type) && step === stepIdx) {
+      candidates.push(group);
+    }
+  });
+
+  // Hand-written models can omit !LDRAW_ORG metadata. Fall back to named
+  // top-level groups when there are no explicit physical Part groups.
+  if (candidates.length === 0) {
+    for (const child of root.children) {
+      if (
+        child.isGroup &&
+        child.name &&
+        Number(child.userData?.buildingStep) === stepIdx
+      ) {
+        candidates.push(child);
+      }
+    }
+  }
+
+  // Avoid moving a nested Part twice if an unusual file declares both an
+  // ancestor and descendant as physical parts in the same step.
+  const candidateSet = new Set(candidates);
+  return candidates.filter(group => {
+    let parent = group.parent;
+    while (parent && parent !== root) {
+      if (candidateSet.has(parent)) return false;
+      parent = parent.parent;
+    }
+    return true;
+  });
+}
+
+function worldDeltaToLocal(parent, worldDelta) {
+  if (!parent) return worldDelta.clone();
+
+  parent.updateWorldMatrix(true, false);
+  const inverse = new THREE.Matrix4().copy(parent.matrixWorld).invert();
+  const origin = new THREE.Vector3(0, 0, 0).applyMatrix4(inverse);
+  const moved = worldDelta.clone().applyMatrix4(inverse);
+  return moved.sub(origin);
+}
+
+function explodeCurrentStep(root, stepIdx, assemblyBox) {
+  if (stepIdx === 0) {
+    return { placements: [], restore() {} };
+  }
+
+  root.updateMatrixWorld(true);
+
+  const groups = collectStepPlacementGroups(root, stepIdx);
+  if (groups.length === 0) {
+    return { placements: [], restore() {} };
+  }
+
+  const assemblySize = assemblyBox.getSize(new THREE.Vector3());
+  const horizontalSpan = Math.max(assemblySize.x, assemblySize.z);
+
+  // One LEGO plate is 8 LDU high, one brick is 24 LDU. Keep enough clearance
+  // to visually separate the new piece without throwing it far out of frame.
+  const lift = THREE.MathUtils.clamp(
+    Math.max(34, assemblySize.y * 0.8, horizontalSpan * 0.16),
+    34,
+    86
+  );
+
+  const placements = [];
+
+  for (const group of groups) {
+    group.updateWorldMatrix(true, true);
+
+    const targetBox = new THREE.Box3().setFromObject(group);
+    if (targetBox.isEmpty()) continue;
+
+    const targetCenter = targetBox.getCenter(new THREE.Vector3());
+    const targetSize = targetBox.getSize(new THREE.Vector3());
+    const originalPosition = group.position.clone();
+
+    const localDelta = worldDeltaToLocal(group.parent, new THREE.Vector3(0, lift, 0));
+    group.position.add(localDelta);
+
+    placements.push({
+      group,
+      originalPosition,
+      targetCenter,
+      targetSize,
+    });
+  }
+
+  root.updateMatrixWorld(true);
+
+  for (const placement of placements) {
+    const explodedBox = new THREE.Box3().setFromObject(placement.group);
+    placement.explodedCenter = explodedBox.getCenter(new THREE.Vector3());
+    placement.explodedSize = explodedBox.getSize(new THREE.Vector3());
+  }
+
+  return {
+    placements,
+    restore() {
+      for (const placement of placements) {
+        placement.group.position.copy(placement.originalPosition);
+      }
+      root.updateMatrixWorld(true);
+    },
+  };
+}
+
+function buildPlacementArrows(placements) {
+  if (!placements.length) return null;
+
+  const arrows = new THREE.Group();
+
+  for (const placement of placements) {
+    const startCenter = placement.explodedCenter;
+    const targetCenter = placement.targetCenter;
+    if (!startCenter || !targetCenter) continue;
+
+    const direction = targetCenter.clone().sub(startCenter);
+    const distance = direction.length();
+    if (distance < 8) continue;
+
+    direction.normalize();
+
+    const partHalfHeight = Math.max(
+      placement.explodedSize?.y || 0,
+      placement.targetSize?.y || 0
+    ) * 0.5;
+
+    // Start just below the exploded part and stop just before the final part
+    // center so the arrow does not visually cut through either object.
+    const startGap = Math.max(5, Math.min(16, partHalfHeight + 4));
+    const endGap = 8;
+    const origin = startCenter.clone().addScaledVector(direction, startGap);
+    const arrowLength = Math.max(10, distance - startGap - endGap);
+
+    const arrow = new THREE.ArrowHelper(
+      direction,
+      origin,
+      arrowLength,
+      INSTR_ARROW_COLOR,
+      Math.min(13, Math.max(8, arrowLength * 0.22)),
+      Math.min(7, Math.max(4, arrowLength * 0.1))
+    );
+
+    arrow.line.material.depthTest = false;
+    arrow.line.material.transparent = true;
+    arrow.line.material.opacity = 0.95;
+    arrow.line.renderOrder = 20;
+
+    arrow.cone.material.depthTest = false;
+    arrow.cone.material.transparent = true;
+    arrow.cone.material.opacity = 0.95;
+    arrow.cone.renderOrder = 20;
+
+    arrows.add(arrow);
+  }
+
+  return arrows.children.length ? arrows : null;
+}
+
+function disposePlacementArrows(arrows) {
+  if (!arrows) return;
+
+  arrows.traverse(obj => {
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+      const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+      materials.forEach(material => material.dispose());
+    }
+  });
+}
+
 function buildStepOutline(root, stepIdx) {
   root.updateMatrixWorld(true);
 
@@ -1465,29 +1731,47 @@ async function generateInstructionCards() {
     for (let stepIdx = 0; stepIdx < stepData.length; stepIdx++) {
       if (revision !== instructionRevision) return;
 
-      applyStepAppearance(instructionModel, stepIdx, INSTR_PAST_OPACITY);
+      applyInstructionAppearance(instructionModel, stepIdx);
       instructionModel.updateMatrixWorld(true);
 
-      // Fit each accumulated step independently. The previous implementation
-      // framed every page against the final model, making early steps tiny.
+      // Capture the assembled target bounds before moving the current step.
+      const assembledBox = getRenderableBounds(instructionModel, true);
+
+      // From step 2 onward, show the new part above its final location and draw
+      // a placement arrow. This makes the actual action clear instead of merely
+      // showing "old transparent geometry + new geometry" in the same pose.
+      const exploded = explodeCurrentStep(instructionModel, stepIdx, assembledBox);
+      instructionModel.updateMatrixWorld(true);
+
+      // Frame both the previous assembly and the exploded current part.
       const box = getRenderableBounds(instructionModel, true);
       fitCameraToBox(
         snapshotCamera,
         box,
         new THREE.Vector3(0.72, 0.58, 0.9),
-        1.2
+        1.16
       );
 
       const outline = buildStepOutline(instructionModel, stepIdx);
       if (outline) instructionScene.add(outline);
 
+      const arrows = buildPlacementArrows(exploded.placements);
+      if (arrows) instructionScene.add(arrows);
+
       offRenderer.render(instructionScene, snapshotCamera);
       const blob = await canvasToBlob(offRenderer.domElement);
+
+      if (arrows) {
+        instructionScene.remove(arrows);
+        disposePlacementArrows(arrows);
+      }
 
       if (outline) {
         instructionScene.remove(outline);
         disposeOutline(outline);
       }
+
+      exploded.restore();
 
       if (revision !== instructionRevision) return;
 
@@ -1501,7 +1785,25 @@ async function generateInstructionCards() {
         image.alt = 'Build step ' + (stepIdx + 1);
         image.loading = 'lazy';
         image.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block';
-        container.replaceChildren(image);
+
+        const label = document.createElement('div');
+        label.className = 'instr-action-label';
+
+        const currentKey = document.createElement('span');
+        currentKey.className = 'current-key';
+        currentKey.textContent = stepIdx === 0 ? 'GREEN = START PART' : 'GREEN + ARROW = ADD';
+
+        label.appendChild(currentKey);
+
+        if (stepIdx > 0) {
+          const divider = document.createTextNode('  ·  ');
+          const previousKey = document.createElement('span');
+          previousKey.className = 'previous-key';
+          previousKey.textContent = 'GRAY = ALREADY BUILT';
+          label.append(divider, previousKey);
+        }
+
+        container.replaceChildren(image, label);
       }
 
       // Yield so long instruction sets do not lock the page for one giant task.
