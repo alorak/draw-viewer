@@ -571,6 +571,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
+import { LDrawConditionalLineMaterial } from 'three/addons/materials/LDrawConditionalLineMaterial.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 // ═══════════════════════════════════════
@@ -758,6 +759,11 @@ function updateViewerGround(box) {
 // ═══════════════════════════════════════
 async function createLoader() {
   const nextLoader = new LDrawLoader();
+
+  // Required by Three.js r180 before any LDConfig parsing or model loading.
+  // Without this, preloadMaterials()/addDefaultMaterials() throws and .ldr/.mpd
+  // files never reach the viewer.
+  nextLoader.setConditionalLineMaterial(LDrawConditionalLineMaterial);
   nextLoader.setPartsLibraryPath(PARTS_URL);
 
   showLoad('Loading colors...', 'Preparing LDraw material library');
