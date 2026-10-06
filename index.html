@@ -1,9 +1,24 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>LDraw Step Viewer</title>
+<script>
+  // Apply the saved theme before CSS paints to avoid a dark-theme flash.
+  // Light is the default for first-time visitors and when storage is unavailable.
+  (() => {
+    try {
+      const savedTheme = localStorage.getItem('draw-viewer-theme');
+      if (savedTheme === 'light' || savedTheme === 'dark') {
+        document.documentElement.dataset.theme = savedTheme;
+      }
+    } catch (error) {
+      // localStorage may be unavailable in restrictive/private contexts.
+      // Keep the HTML default: light.
+    }
+  })();
+</script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&display=swap');
 
@@ -595,7 +610,8 @@ let model = null;
 let loader = null;
 let rawText = '';
 let fileName = '';
-let isDark = true;
+const THEME_STORAGE_KEY = 'draw-viewer-theme';
+let isDark = document.documentElement.dataset.theme === 'dark';
 
 let stepData = [];
 let currentStep = 0;
@@ -613,7 +629,7 @@ function initScene() {
   const el = document.getElementById('canvas-container');
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0a0a0f);
+  scene.background = new THREE.Color(isDark ? 0x0a0a0f : 0xdde0e8);
 
   camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100000);
   camera.position.set(150, 200, 250);
@@ -1202,15 +1218,35 @@ function updateBOM() {
 // ═══════════════════════════════════════
 // THEME
 // ═══════════════════════════════════════
-function toggleTheme() {
-  isDark = !isDark;
-  document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
-  document.getElementById('theme-toggle').textContent = isDark ? '🌙' : '☀️';
+function applyTheme(theme, persist = false) {
+  const normalizedTheme = theme === 'dark' ? 'dark' : 'light';
+  isDark = normalizedTheme === 'dark';
+
+  document.documentElement.dataset.theme = normalizedTheme;
+
+  const toggle = document.getElementById('theme-toggle');
+  if (toggle) {
+    toggle.textContent = isDark ? '🌙' : '☀️';
+    toggle.title = isDark ? 'Switch to light theme' : 'Switch to dark theme';
+    toggle.setAttribute('aria-label', toggle.title);
+  }
 
   if (scene) {
     scene.background = new THREE.Color(isDark ? 0x0a0a0f : 0xdde0e8);
     rebuildGrid();
   }
+
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, normalizedTheme);
+    } catch (error) {
+      console.warn('Could not persist theme preference:', error);
+    }
+  }
+}
+
+function toggleTheme() {
+  applyTheme(isDark ? 'light' : 'dark', true);
 }
 
 // ═══════════════════════════════════════
@@ -1844,6 +1880,9 @@ window.openInstructions = openInstructions;
 window.closeInstructions = closeInstructions;
 Object.defineProperty(window, '_totalSteps', { get: () => stepData.length });
 
+// Synchronize the button with the theme already selected by the early
+// localStorage bootstrap, then initialize the WebGL scene using that theme.
+applyTheme(isDark ? 'dark' : 'light');
 initScene();
 </script>
 </body>
