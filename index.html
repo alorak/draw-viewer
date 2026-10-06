@@ -123,6 +123,22 @@
   /* ─── Main ─── */
   .main-area { position: relative; overflow: hidden; }
 
+  .main-area.dragover::after {
+    content: 'Drop LDraw file';
+    position: absolute;
+    inset: 10px;
+    z-index: 25;
+    display: grid;
+    place-items: center;
+    border: 2px dashed var(--accent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    pointer-events: none;
+  }
+
   #canvas-container { width: 100%; height: 100%; background: var(--bg-primary); }
   #canvas-container canvas { width: 100% !important; height: 100% !important; display: block; }
 
@@ -310,7 +326,7 @@
     flex-direction: column;
     gap: 24px;
     padding: 24px 20px 40px;
-    max-width: 700px;
+    max-width: 820px;
     margin: 0 auto;
   }
 
@@ -406,6 +422,21 @@
   .instr-generating .spinner {
     border-color: var(--instr-border);
     border-top-color: #6a6a88;
+  }
+  @media (max-width: 700px) {
+    .app { grid-template-rows: 48px 1fr 54px; }
+    header { padding: 0 8px; }
+    .logo span { display: none; }
+    .file-info { max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .btn { padding: 6px 8px; }
+    footer { gap: 5px; padding: 0 7px; }
+    footer .progress { max-width: none; }
+    #btn-first, #btn-last { display: none; }
+    .hints { display: none !important; }
+    .instr-grid { padding: 12px 8px 24px; gap: 14px; }
+    .instr-card-header { padding: 10px; gap: 8px; }
+    .instr-step-num { font-size: 26px; min-width: 30px; }
+    .instr-bom-entry { padding: 4px 7px; }
   }
 </style>
 </head>
@@ -524,8 +555,9 @@ const LDRAW_COLORS = {
   450:'#B67B50',462:'#FFA500',484:'#8B0000',503:'#C8C8C8',
 };
 
-// Green outline material for instruction mode
-const OUTLINE_COLOR = 0x00cc44;
+const OUTLINE_COLOR = 0x00bb44;
+const MAIN_PAST_OPACITY = 0.46;
+const INSTR_PAST_OPACITY = 0.34;
 
 // ═══════════════════════════════════════
 // STATE
@@ -533,170 +565,397 @@ const OUTLINE_COLOR = 0x00cc44;
 let scene, camera, renderer, controls, gridHelper;
 let model = null;
 let loader = null;
-let materialsReady = false;
-let isDark = true;
 let rawText = '';
 let fileName = '';
+let isDark = true;
 
 let stepData = [];
 let currentStep = 0;
+let loadRevision = 0;
+
+let instructionRevision = 0;
+let instructionReady = false;
+let instructionGenerating = false;
+let instructionObjectUrls = [];
 
 // ═══════════════════════════════════════
-// INIT SCENE
+// SCENE
 // ═══════════════════════════════════════
 function initScene() {
   const el = document.getElementById('canvas-container');
+
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0a0f);
 
-  camera = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 1, 10000);
+  camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100000);
   camera.position.set(150, 200, 250);
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio);
-  renderer.setSize(el.clientWidth, el.clientHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   el.appendChild(renderer.domElement);
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-  const d1 = new THREE.DirectionalLight(0xffffff, 0.8);
-  d1.position.set(100, 200, 150);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.72));
+
+  const d1 = new THREE.DirectionalLight(0xffffff, 0.9);
+  d1.position.set(120, 220, 160);
   scene.add(d1);
-  const d2 = new THREE.DirectionalLight(0x8888ff, 0.3);
-  d2.position.set(-100, 100, -100);
+
+  const d2 = new THREE.DirectionalLight(0x9aa8ff, 0.28);
+  d2.position.set(-120, 100, -120);
   scene.add(d2);
 
-  gridHelper = new THREE.GridHelper(400, 20, 0x2a2a3a, 0x1a1a26);
-  scene.add(gridHelper);
+  rebuildGrid();
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.1;
+
+  const resize = () => {
+    const w = Math.max(1, el.clientWidth);
+    const h = Math.max(1, el.clientHeight);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h, false);
+  };
+
+  resize();
+  const resizeObserver = new ResizeObserver(resize);
+  resizeObserver.observe(el);
 
   (function animate() {
     requestAnimationFrame(animate);
     controls.update();
     renderer.render(scene, camera);
   })();
+}
 
-  window.addEventListener('resize', () => {
-    camera.aspect = el.clientWidth / el.clientHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(el.clientWidth, el.clientHeight);
+function rebuildGrid() {
+  if (gridHelper) {
+    scene.remove(gridHelper);
+    gridHelper.geometry.dispose();
+    gridHelper.material.dispose();
+  }
+
+  gridHelper = new THREE.GridHelper(
+    400,
+    20,
+    isDark ? 0x2a2a3a : 0xb4bac8,
+    isDark ? 0x1a1a26 : 0xcbd0da
+  );
+  scene.add(gridHelper);
+}
+
+// ═══════════════════════════════════════
+// LOADER
+// ═══════════════════════════════════════
+async function createLoader() {
+  const nextLoader = new LDrawLoader();
+  nextLoader.setPartsLibraryPath(PARTS_URL);
+
+  showLoad('Loading colors...', 'Preparing LDraw material library');
+  try {
+    // LDrawLoader has a dedicated LDConfig parser. Parsing LDConfig as a model
+    // leaves the material library incomplete, so use the intended API here.
+    await nextLoader.preloadMaterials(COLORS_URL);
+  } catch (err) {
+    console.warn('LDConfig preload failed. Falling back to loader defaults.', err);
+  }
+
+  return nextLoader;
+}
+
+function normalizeStepDirectives(text) {
+  // three.js r162 understands STEP but not ROTSTEP. ROTSTEP is also a build
+  // boundary, so normalize it while intentionally ignoring its camera hint.
+  return text.replace(/^(\s*0\s+)ROTSTEP(?:\s+.*)?$/gim, '$1STEP');
+}
+
+function loadTextWithLoader(ldrawLoader, text) {
+  const normalized = normalizeStepDirectives(text);
+  const blobUrl = URL.createObjectURL(new Blob([normalized], { type: 'text/plain' }));
+
+  return new Promise((resolve, reject) => {
+    ldrawLoader.load(
+      blobUrl,
+      group => {
+        URL.revokeObjectURL(blobUrl);
+        resolve(group);
+      },
+      undefined,
+      err => {
+        URL.revokeObjectURL(blobUrl);
+        reject(err instanceof Error ? err : new Error(String(err || 'Unknown LDraw load error')));
+      }
+    );
   });
 }
 
 // ═══════════════════════════════════════
-// INIT LOADER
+// MODEL PREPARATION / BUILD STEPS
 // ═══════════════════════════════════════
-async function initLoader() {
-  if (loader && materialsReady) return;
-  showLoad('Initializing loader...', 'Setting parts library');
-  loader = new LDrawLoader();
-  loader.setPartsLibraryPath(PARTS_URL);
-
-  showLoad('Loading colors...', 'Downloading LDConfig');
-  try {
-    const resp = await fetch(COLORS_URL);
-    if (resp.ok) {
-      const txt = await resp.text();
-      await new Promise((res, rej) => { loader.parse(txt, res, undefined, rej); });
-    }
-  } catch (e) { console.warn('Color preload failed:', e.message); }
-  materialsReady = true;
+function isRenderable(obj) {
+  return Boolean(obj && (obj.isMesh || obj.isLineSegments));
 }
 
-// ═══════════════════════════════════════
-// PARSE STEPS FROM RAW TEXT
-// ═══════════════════════════════════════
-function parseStepsFromText(text) {
-  const lines = text.split(/\r?\n/);
-  const result = [];
-  let current = [];
-  let inMain = true;
-  let seenFile = false;
+function isolateMaterials(root) {
+  root.traverse(obj => {
+    if (!isRenderable(obj) || !obj.material) return;
+
+    obj.material = Array.isArray(obj.material)
+      ? obj.material.map(material => material.clone())
+      : obj.material.clone();
+
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const material of materials) {
+      material.userData = { ...material.userData };
+      material.userData.__viewerBaseOpacity = Number.isFinite(material.opacity) ? material.opacity : 1;
+      material.userData.__viewerBaseTransparent = Boolean(material.transparent);
+      material.userData.__viewerBaseDepthWrite = material.depthWrite !== false;
+    }
+  });
+}
+
+function annotateBuildSteps(root) {
+  function visit(obj, inheritedStep) {
+    let step = inheritedStep;
+    if (obj.isGroup && Number.isFinite(obj.userData?.buildingStep)) {
+      step = obj.userData.buildingStep;
+    }
+
+    if (isRenderable(obj)) {
+      obj.userData.__viewerBuildStep = Number.isFinite(step) ? step : 0;
+    }
+
+    for (const child of obj.children) visit(child, step);
+  }
+
+  visit(root, 0);
+}
+
+function materialFade(material, factor) {
+  const baseOpacity = Number.isFinite(material.userData?.__viewerBaseOpacity)
+    ? material.userData.__viewerBaseOpacity
+    : 1;
+  const baseTransparent = Boolean(material.userData?.__viewerBaseTransparent);
+  const baseDepthWrite = material.userData?.__viewerBaseDepthWrite !== false;
+
+  material.opacity = baseOpacity * factor;
+  material.transparent = baseTransparent || factor < 0.999 || material.opacity < 0.999;
+  material.depthWrite = baseDepthWrite && factor >= 0.999;
+  material.needsUpdate = true;
+}
+
+function setRenderableFade(obj, factor) {
+  if (!obj.material) return;
+  const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+  materials.forEach(material => materialFade(material, factor));
+}
+
+function applyStepAppearance(root, stepIdx, pastOpacity) {
+  root.traverse(obj => {
+    if (!isRenderable(obj)) return;
+
+    const step = Number.isFinite(obj.userData?.__viewerBuildStep)
+      ? obj.userData.__viewerBuildStep
+      : 0;
+
+    obj.visible = step <= stepIdx;
+    if (obj.visible) {
+      setRenderableFade(obj, step === stepIdx ? 1 : pastOpacity);
+    }
+  });
+}
+
+function parseTopLevelStepRefs(text) {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const refsByStep = [[]];
+  let currentStepIdx = 0;
+
+  let mpdSeen = false;
+  let insideMain = true;
 
   for (const raw of lines) {
     const line = raw.trim();
-    if (line.startsWith('0 FILE')) {
-      if (seenFile) { inMain = false; break; }
-      seenFile = true; continue;
-    }
-    if (line === '0 NOFILE') { inMain = false; break; }
-    if (!inMain) break;
+    if (!line) continue;
 
-    if (line === '0 STEP') {
-      if (current.length > 0) { result.push({ partRefs: [...current] }); current = []; }
+    if (/^0\s+FILE\s+/i.test(line)) {
+      if (mpdSeen) break;
+      mpdSeen = true;
+      insideMain = true;
       continue;
     }
 
-    if (line.startsWith('1 ')) {
-      const t = line.split(/\s+/);
-      if (t.length >= 15) {
-        current.push({ color: parseInt(t[1], 10), partId: t.slice(14).join(' ') });
+    if (mpdSeen && /^0\s+NOFILE\b/i.test(line)) break;
+    if (!insideMain) continue;
+
+    if (/^0\s+(?:STEP|ROTSTEP)\b/i.test(line)) {
+      // LDrawLoader stores STEP as a boolean on the next part. Consecutive
+      // empty STEP lines therefore do not create multiple effective steps.
+      if (refsByStep[currentStepIdx].length > 0) {
+        currentStepIdx += 1;
+        refsByStep[currentStepIdx] = [];
+      }
+      continue;
+    }
+
+    if (/^1\s+/.test(line)) {
+      const tokens = line.split(/\s+/);
+      if (tokens.length >= 15) {
+        refsByStep[currentStepIdx].push({
+          color: tokens[1],
+          partId: tokens.slice(14).join(' '),
+        });
       }
     }
   }
-  if (current.length > 0) result.push({ partRefs: [...current] });
-  return result;
+
+  while (refsByStep.length > 1 && refsByStep.at(-1).length === 0) {
+    refsByStep.pop();
+  }
+
+  return refsByStep;
+}
+
+function buildStepData(root, text) {
+  const total = Math.max(1, Number(root.userData?.numBuildingSteps) || 1);
+  const data = Array.from({ length: total }, () => ({ partRefs: [] }));
+
+  // The loader already knows which top-level part instance belongs to which
+  // building step. This is much safer than assuming model.children order is
+  // identical to raw type-1 line order.
+  for (const child of root.children) {
+    if (!child.isGroup || !child.name) continue;
+
+    const step = Number(child.userData?.buildingStep);
+    if (!Number.isFinite(step) || step < 0 || step >= total) continue;
+
+    data[step].partRefs.push({
+      color: String(child.userData?.colorCode ?? '16'),
+      partId: child.name,
+    });
+  }
+
+  // Some files contain direct geometry or unusual MPD layouts. Keep a raw-text
+  // parser as a BOM fallback only; model visibility remains loader-driven.
+  const fallback = parseTopLevelStepRefs(text);
+  for (let i = 0; i < total; i++) {
+    if (data[i].partRefs.length === 0 && fallback[i]?.length) {
+      data[i].partRefs = fallback[i];
+    }
+  }
+
+  return data;
+}
+
+// ═══════════════════════════════════════
+// BOUNDS / CAMERA
+// ═══════════════════════════════════════
+function getRenderableBounds(root, visibleOnly = false) {
+  const box = new THREE.Box3();
+  const temp = new THREE.Box3();
+
+  root.updateMatrixWorld(true);
+
+  root.traverse(obj => {
+    if (!isRenderable(obj) || !obj.geometry) return;
+    if (visibleOnly && !obj.visible) return;
+
+    if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
+    if (!obj.geometry.boundingBox) return;
+
+    temp.copy(obj.geometry.boundingBox).applyMatrix4(obj.matrixWorld);
+    box.union(temp);
+  });
+
+  return box;
+}
+
+function fitCameraToBox(targetCamera, box, direction, margin = 1.18) {
+  const center = new THREE.Vector3();
+  const size = new THREE.Vector3();
+
+  if (box.isEmpty()) {
+    center.set(0, 0, 0);
+    size.set(80, 80, 80);
+  } else {
+    box.getCenter(center);
+    box.getSize(size);
+  }
+
+  const radius = Math.max(size.length() * 0.5, 12);
+  const verticalFov = THREE.MathUtils.degToRad(targetCamera.fov);
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * targetCamera.aspect);
+  const limitingFov = Math.max(0.2, Math.min(verticalFov, horizontalFov));
+  const distance = (radius / Math.sin(limitingFov / 2)) * margin;
+
+  const dir = direction.clone().normalize();
+  targetCamera.position.copy(center).addScaledVector(dir, distance);
+  targetCamera.near = Math.max(0.1, distance - radius * 2.5);
+  targetCamera.far = Math.max(1000, distance + radius * 8);
+  targetCamera.lookAt(center);
+  targetCamera.updateProjectionMatrix();
+
+  return center;
+}
+
+function fitMainCamera() {
+  if (!model) return;
+  const box = getRenderableBounds(model, false);
+  const center = fitCameraToBox(camera, box, new THREE.Vector3(0.72, 0.58, 0.9), 1.24);
+  controls.target.copy(center);
+  controls.update();
 }
 
 // ═══════════════════════════════════════
 // LOAD FILE
 // ═══════════════════════════════════════
 async function loadFile(content, name) {
-  rawText = content;
-  fileName = name;
+  const revision = ++loadRevision;
+  showLoad('Preparing model...', name);
+
+  let nextModel = null;
 
   try {
-    await initLoader();
-    showLoad('Parsing model...', name);
+    const nextLoader = await createLoader();
+    if (revision !== loadRevision) return;
 
-    const group = await new Promise((res, rej) => { loader.parse(content, res, undefined, rej); });
+    showLoad('Loading model...', name);
+    nextModel = await loadTextWithLoader(nextLoader, content);
+
+    if (revision !== loadRevision) {
+      disposeModel(nextModel);
+      return;
+    }
+
+    // Convert LDraw's Y-down coordinates to the viewer's Y-up coordinates.
+    nextModel.rotation.x = Math.PI;
+
+    // LDrawLoader intentionally reuses materials across parts. Clone them per
+    // renderable so fading one build step cannot accidentally fade other steps.
+    isolateMaterials(nextModel);
+    annotateBuildSteps(nextModel);
+
+    const nextStepData = buildStepData(nextModel, content);
 
     if (model) {
       scene.remove(model);
-      model.traverse(c => {
-        if (c.isMesh) {
-          c.geometry?.dispose();
-          (Array.isArray(c.material) ? c.material : [c.material]).forEach(x => x?.dispose());
-        }
-      });
+      disposeModel(model);
     }
 
-    model = group;
-    model.rotation.x = Math.PI;
+    model = nextModel;
+    loader = nextLoader;
+    rawText = content;
+    fileName = name;
+    stepData = nextStepData;
+    currentStep = 0;
+
     scene.add(model);
+    fitMainCamera();
 
-    const textSteps = parseStepsFromText(rawText);
-    const topChildren = model.children.filter(c => c.isGroup || c.isMesh);
+    clearInstructionCache();
 
-    stepData = [];
-    let ci = 0;
-    for (const ts of textSteps) {
-      const children = [];
-      for (let p = 0; p < ts.partRefs.length && ci < topChildren.length; p++, ci++) {
-        children.push(topChildren[ci]);
-      }
-      stepData.push({ children, partRefs: ts.partRefs });
-    }
-    if (ci < topChildren.length && stepData.length > 0) {
-      while (ci < topChildren.length) stepData[stepData.length - 1].children.push(topChildren[ci++]);
-    }
-    if (stepData.length === 0) stepData = [{ children: topChildren, partRefs: [] }];
-
-    console.log(`[Steps] ${stepData.length} steps`);
-
-    // Fit camera
-    const box = new THREE.Box3().setFromObject(model);
-    const center = box.getCenter(new THREE.Vector3());
-    const sz = box.getSize(new THREE.Vector3());
-    const dist = Math.max(sz.x, sz.y, sz.z) * 1.5;
-    camera.position.set(center.x + dist * 0.5, center.y + dist * 0.6, center.z + dist * 0.8);
-    controls.target.copy(center);
-    controls.update();
-
-    // UI
     document.getElementById('drop-zone').classList.add('hidden');
     document.getElementById('footer').classList.remove('disabled');
     document.getElementById('step-overlay').classList.add('visible');
@@ -706,78 +965,134 @@ async function loadFile(content, name) {
     document.getElementById('file-info').textContent = name;
     document.getElementById('btn-instr').style.display = 'flex';
 
-    hideLoad();
     goToStep(0);
+    hideLoad();
 
   } catch (err) {
     console.error('Load error:', err);
     hideLoad();
-    alert('Error: ' + err.message);
+
+    if (nextModel && nextModel !== model) disposeModel(nextModel);
+
+    const message = err?.message || String(err || 'Unknown error');
+    alert('Could not load this LDraw file.\n\n' + message);
   }
 }
 
+function disposeModel(root) {
+  if (!root) return;
+
+  const geometries = new Set();
+  const materials = new Set();
+
+  root.traverse(obj => {
+    if (obj.geometry) geometries.add(obj.geometry);
+    if (obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      mats.forEach(material => materials.add(material));
+    }
+  });
+
+  geometries.forEach(geometry => geometry.dispose());
+  materials.forEach(material => material.dispose());
+}
+
 // ═══════════════════════════════════════
-// 3D VIEWER STEP NAVIGATION
+// STEP NAVIGATION
 // ═══════════════════════════════════════
 function goToStep(idx) {
   const total = stepData.length;
-  if (total === 0) return;
-  currentStep = Math.max(0, Math.min(idx, total - 1));
+  if (!model || total === 0) return;
 
-  for (let s = 0; s < total; s++) {
-    stepData[s].children.forEach(child => {
-      child.visible = s <= currentStep;
-      setOpacity(child, s === currentStep ? 1.0 : (s < currentStep ? 0.45 : 1.0));
-    });
-  }
+  currentStep = Math.max(0, Math.min(Number(idx) || 0, total - 1));
+  applyStepAppearance(model, currentStep, MAIN_PAST_OPACITY);
   updateUI();
   updateBOM();
-}
-
-function setOpacity(obj, op) {
-  obj.traverse(c => {
-    if (c.isMesh && c.material) {
-      (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => {
-        m.transparent = op < 1; m.opacity = op; m.depthWrite = op >= 1;
-      });
-    }
-  });
 }
 
 function nextStep() { goToStep(currentStep + 1); }
 function prevStep() { goToStep(currentStep - 1); }
 
 function updateUI() {
-  const t = stepData.length;
+  const total = stepData.length;
+
   document.getElementById('step-num').textContent = currentStep + 1;
-  document.getElementById('step-tot').textContent = `/ ${t}`;
-  document.getElementById('ftxt').textContent = `${currentStep + 1} / ${t}`;
-  document.getElementById('pbar').style.width = (t > 1 ? (currentStep / (t - 1)) * 100 : 100) + '%';
+  document.getElementById('step-tot').textContent = '/ ' + total;
+  document.getElementById('ftxt').textContent = (currentStep + 1) + ' / ' + total;
+
+  document.getElementById('pbar').style.width =
+    (total > 1 ? (currentStep / (total - 1)) * 100 : 100) + '%';
+
   document.getElementById('btn-prev').disabled = currentStep === 0;
   document.getElementById('btn-first').disabled = currentStep === 0;
-  document.getElementById('btn-next').disabled = currentStep === t - 1;
-  document.getElementById('btn-last').disabled = currentStep === t - 1;
+  document.getElementById('btn-next').disabled = currentStep === total - 1;
+  document.getElementById('btn-last').disabled = currentStep === total - 1;
+}
+
+function colorToCss(code) {
+  const value = String(code ?? '').trim();
+
+  if (/^0x2[0-9a-f]{6}$/i.test(value)) {
+    return '#' + value.slice(3);
+  }
+
+  const numeric = Number.parseInt(value, 10);
+  return LDRAW_COLORS[numeric] || '#888888';
+}
+
+function normalizedPartName(partId) {
+  return String(partId || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .at(-1)
+    .replace(/\.(?:dat|ldr|mpd)$/i, '');
+}
+
+function groupedPartRefs(partRefs) {
+  const grouped = new Map();
+
+  for (const ref of partRefs || []) {
+    const key = String(ref.color) + '|' + String(ref.partId);
+    const existing = grouped.get(key) || { ...ref, qty: 0 };
+    existing.qty += 1;
+    grouped.set(key, existing);
+  }
+
+  return [...grouped.values()];
 }
 
 function updateBOM() {
   const panel = document.getElementById('bom-list');
-  const step = stepData[currentStep];
-  if (!step || !step.partRefs.length) {
-    panel.innerHTML = '<span style="font-size:11px;color:var(--text-muted)">No part info</span>';
+  panel.replaceChildren();
+
+  const refs = stepData[currentStep]?.partRefs || [];
+  if (refs.length === 0) {
+    const empty = document.createElement('span');
+    empty.style.cssText = 'font-size:11px;color:var(--text-muted)';
+    empty.textContent = 'No part info';
+    panel.appendChild(empty);
     return;
   }
-  const g = {};
-  step.partRefs.forEach(({ color, partId }) => {
-    const k = `${color}|${partId}`;
-    if (!g[k]) g[k] = { color, partId, qty: 0 }; g[k].qty++;
-  });
-  panel.innerHTML = Object.values(g).map(({ color, partId, qty }) => `
-    <div class="bom-item">
-      <div class="bom-color" style="background:${LDRAW_COLORS[color]||'#888'}"></div>
-      <span class="bom-name">${partId.replace(/\.dat/i,'')}</span>
-      <span class="bom-qty">×${qty}</span>
-    </div>
-  `).join('');
+
+  for (const { color, partId, qty } of groupedPartRefs(refs)) {
+    const item = document.createElement('div');
+    item.className = 'bom-item';
+
+    const swatch = document.createElement('div');
+    swatch.className = 'bom-color';
+    swatch.style.background = colorToCss(color);
+
+    const name = document.createElement('span');
+    name.className = 'bom-name';
+    name.textContent = normalizedPartName(partId);
+
+    const quantity = document.createElement('span');
+    quantity.className = 'bom-qty';
+    quantity.textContent = '×' + qty;
+
+    item.append(swatch, name, quantity);
+    panel.appendChild(item);
+  }
 }
 
 // ═══════════════════════════════════════
@@ -787,295 +1102,418 @@ function toggleTheme() {
   isDark = !isDark;
   document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
   document.getElementById('theme-toggle').textContent = isDark ? '🌙' : '☀️';
+
   if (scene) {
     scene.background = new THREE.Color(isDark ? 0x0a0a0f : 0xdde0e8);
-    if (gridHelper) { gridHelper.material.color.set(isDark ? 0x2a2a3a : 0xc0c0d0); }
+    rebuildGrid();
   }
 }
 
 // ═══════════════════════════════════════
 // LOADING
 // ═══════════════════════════════════════
-function showLoad(t, s) {
+function showLoad(title, subtitle) {
   document.getElementById('loading').classList.add('visible');
-  document.getElementById('load-text').textContent = t || '';
-  document.getElementById('load-sub').textContent = s || '';
+  document.getElementById('load-text').textContent = title || '';
+  document.getElementById('load-sub').textContent = subtitle || '';
 }
-function hideLoad() { document.getElementById('loading').classList.remove('visible'); }
+
+function hideLoad() {
+  document.getElementById('loading').classList.remove('visible');
+}
 
 // ═══════════════════════════════════════
-// FILE INPUT
+// FILE INPUT / DRAG-DROP
 // ═══════════════════════════════════════
-const dz = document.getElementById('drop-zone');
-document.getElementById('file-input').addEventListener('change', e => {
-  if (e.target.files[0]) readFile(e.target.files[0]);
-});
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-dz.addEventListener('drop', e => {
-  e.preventDefault(); dz.classList.remove('dragover');
-  if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
-});
-function readFile(file) {
-  const r = new FileReader();
-  r.onload = e => loadFile(e.target.result, file.name);
-  r.readAsText(file);
+function validateAndReadFile(file) {
+  if (!file) return;
+
+  if (!/\.(?:ldr|mpd|dat)$/i.test(file.name)) {
+    alert('Please choose an .ldr, .mpd or .dat file.');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onerror = () => alert('Could not read this file.');
+  reader.onload = event => loadFile(String(event.target.result || ''), file.name);
+  reader.readAsText(file);
 }
+
+const fileInput = document.getElementById('file-input');
+fileInput.addEventListener('change', event => {
+  validateAndReadFile(event.target.files?.[0]);
+  // Selecting the same file again should still trigger change.
+  event.target.value = '';
+});
+
+const mainArea = document.querySelector('.main-area');
+let dragDepth = 0;
+
+mainArea.addEventListener('dragenter', event => {
+  event.preventDefault();
+  dragDepth += 1;
+  mainArea.classList.add('dragover');
+});
+
+mainArea.addEventListener('dragover', event => {
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+});
+
+mainArea.addEventListener('dragleave', event => {
+  event.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) mainArea.classList.remove('dragover');
+});
+
+mainArea.addEventListener('drop', event => {
+  event.preventDefault();
+  dragDepth = 0;
+  mainArea.classList.remove('dragover');
+  validateAndReadFile(event.dataTransfer?.files?.[0]);
+});
 
 // ═══════════════════════════════════════
 // KEYBOARD
 // ═══════════════════════════════════════
-document.addEventListener('keydown', e => {
+document.addEventListener('keydown', event => {
   if (document.getElementById('instr-overlay').classList.contains('visible')) {
-    if (e.key === 'Escape') closeInstructions();
+    if (event.key === 'Escape') closeInstructions();
     return;
   }
-  if (e.key === 'ArrowRight' || e.key === 'n') nextStep();
-  if (e.key === 'ArrowLeft' || e.key === 'p') prevStep();
-  if (e.key === 'Home') goToStep(0);
-  if (e.key === 'End') goToStep(stepData.length - 1);
+
+  if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'n') {
+    event.preventDefault();
+    nextStep();
+  } else if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'p') {
+    event.preventDefault();
+    prevStep();
+  } else if (event.key === 'Home') {
+    event.preventDefault();
+    goToStep(0);
+  } else if (event.key === 'End') {
+    event.preventDefault();
+    goToStep(stepData.length - 1);
+  }
 });
 
-// ═══════════════════════════════════════════════════
+// ═══════════════════════════════════════
 // INSTRUCTION MODE
-// ═══════════════════════════════════════════════════
-
+// ═══════════════════════════════════════
 function openInstructions() {
-  if (stepData.length === 0) return;
-  const overlay = document.getElementById('instr-overlay');
-  overlay.classList.add('visible');
+  if (!model || stepData.length === 0) return;
 
+  document.getElementById('instr-overlay').classList.add('visible');
   document.getElementById('instr-title').textContent =
-    `Build Instructions — ${fileName.replace(/\.[^.]+$/, '')}`;
+    'Build Instructions — ' + fileName.replace(/\.[^.]+$/, '');
 
-  generateInstructionCards();
+  if (!instructionReady && !instructionGenerating) {
+    generateInstructionCards();
+  }
 }
 
 function closeInstructions() {
   document.getElementById('instr-overlay').classList.remove('visible');
-  // Clean up offscreen renderers
-  instrRenderers.forEach(r => r.dispose());
-  instrRenderers = [];
 }
 
-let instrRenderers = [];
+function clearInstructionCache() {
+  instructionRevision += 1;
+  instructionReady = false;
+  instructionGenerating = false;
 
-function buildBomHtml(partRefs, stepIdx) {
-  if (!partRefs || !partRefs.length) return '<span style="font-size:10px;color:#999">—</span>';
+  for (const url of instructionObjectUrls) URL.revokeObjectURL(url);
+  instructionObjectUrls = [];
 
-  const g = {};
-  partRefs.forEach(({ color, partId }) => {
-    const k = `${color}|${partId}`;
-    if (!g[k]) g[k] = { color, partId, qty: 0 };
-    g[k].qty++;
+  document.getElementById('instr-grid').replaceChildren();
+}
+
+function buildInstructionBomBox(partRefs) {
+  const box = document.createElement('div');
+  box.className = 'instr-bom-box';
+
+  const grouped = groupedPartRefs(partRefs);
+  if (grouped.length === 0) {
+    const empty = document.createElement('span');
+    empty.style.cssText = 'font-size:10px;color:#999';
+    empty.textContent = '—';
+    box.appendChild(empty);
+    return box;
+  }
+
+  for (const { color, partId, qty } of grouped) {
+    const entry = document.createElement('div');
+    entry.className = 'instr-bom-entry';
+
+    const swatch = document.createElement('div');
+    swatch.className = 'instr-bom-swatch';
+    swatch.style.background = colorToCss(color);
+
+    const info = document.createElement('div');
+    info.className = 'instr-bom-info';
+
+    const label = document.createElement('span');
+    label.className = 'instr-bom-label';
+    label.textContent = normalizedPartName(partId);
+
+    const quantity = document.createElement('span');
+    quantity.className = 'instr-bom-qty';
+    quantity.textContent = qty + 'x';
+
+    info.append(label, quantity);
+    entry.append(swatch, info);
+    box.appendChild(entry);
+  }
+
+  return box;
+}
+
+function createInstructionPlaceholders() {
+  const grid = document.getElementById('instr-grid');
+  grid.replaceChildren();
+
+  for (let stepIdx = 0; stepIdx < stepData.length; stepIdx++) {
+    const card = document.createElement('div');
+    card.className = 'instr-card';
+    card.id = 'instr-card-' + stepIdx;
+
+    const header = document.createElement('div');
+    header.className = 'instr-card-header';
+
+    const number = document.createElement('div');
+    number.className = 'instr-step-num';
+    number.textContent = stepIdx + 1;
+
+    header.append(number, buildInstructionBomBox(stepData[stepIdx].partRefs));
+
+    const render = document.createElement('div');
+    render.className = 'instr-render';
+    render.id = 'instr-render-' + stepIdx;
+
+    const generating = document.createElement('div');
+    generating.className = 'instr-generating';
+
+    const spinner = document.createElement('div');
+    spinner.className = 'spinner';
+
+    const text = document.createElement('span');
+    text.textContent = 'Rendering step ' + (stepIdx + 1) + '/' + stepData.length + '...';
+
+    generating.append(spinner, text);
+    render.appendChild(generating);
+    card.append(header, render);
+    grid.appendChild(card);
+  }
+}
+
+function cloneForInstructions(source) {
+  const clone = source.clone(true);
+  isolateMaterials(clone);
+  annotateBuildSteps(clone);
+  return clone;
+}
+
+function disposeCloneMaterials(root) {
+  const materials = new Set();
+
+  root.traverse(obj => {
+    if (!obj.material) return;
+    const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+    mats.forEach(material => materials.add(material));
   });
 
-  return Object.values(g).map(({ color, partId, qty }) => {
-    const hex = LDRAW_COLORS[color] || '#888';
-    const name = partId.replace(/\.dat/i, '');
-    return `
-      <div class="instr-bom-entry">
-        <div class="instr-bom-swatch" style="background:${hex}"></div>
-        <div class="instr-bom-info">
-          <span class="instr-bom-label">${name}</span>
-          <span class="instr-bom-qty">${qty}x</span>
-        </div>
-      </div>
-    `;
-  }).join('');
+  materials.forEach(material => material.dispose());
+}
+
+function buildStepOutline(root, stepIdx) {
+  root.updateMatrixWorld(true);
+
+  const outline = new THREE.Group();
+  const lineMaterial = new THREE.LineBasicMaterial({
+    color: OUTLINE_COLOR,
+    transparent: true,
+    opacity: 0.88,
+    depthTest: true,
+    depthWrite: false,
+  });
+
+  let lineCount = 0;
+
+  root.traverse(obj => {
+    if (!obj.isMesh || !obj.visible || !obj.geometry) return;
+
+    const step = Number.isFinite(obj.userData?.__viewerBuildStep)
+      ? obj.userData.__viewerBuildStep
+      : 0;
+    if (step !== stepIdx) return;
+
+    const position = obj.geometry.getAttribute('position');
+    if (!position || position.count < 3) return;
+
+    const edges = new THREE.EdgesGeometry(obj.geometry, 28);
+    const edgePosition = edges.getAttribute('position');
+
+    if (!edgePosition || edgePosition.count < 2) {
+      edges.dispose();
+      return;
+    }
+
+    const wire = new THREE.LineSegments(edges, lineMaterial);
+
+    // matrixWorld already contains every parent transform, including the
+    // LDraw-to-viewer PI rotation. Applying model.matrixWorld a second time
+    // was the cause of the displaced green "ghost" parts in instructions.
+    wire.matrixAutoUpdate = false;
+    wire.matrix.copy(obj.matrixWorld);
+
+    outline.add(wire);
+    lineCount += 1;
+  });
+
+  if (lineCount === 0) {
+    lineMaterial.dispose();
+    return null;
+  }
+
+  outline.userData.__lineMaterial = lineMaterial;
+  return outline;
+}
+
+function disposeOutline(outline) {
+  if (!outline) return;
+
+  outline.traverse(obj => {
+    if (obj.geometry) obj.geometry.dispose();
+  });
+
+  outline.userData.__lineMaterial?.dispose();
+}
+
+function canvasToBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (blob) resolve(blob);
+      else reject(new Error('Could not create instruction image.'));
+    }, 'image/png');
+  });
 }
 
 async function generateInstructionCards() {
-  const grid = document.getElementById('instr-grid');
-  grid.innerHTML = '';
+  if (!model || instructionGenerating) return;
 
-  // Create all placeholder cards
-  for (let s = 0; s < stepData.length; s++) {
-    const card = document.createElement('div');
-    card.className = 'instr-card';
-    card.id = `instr-card-${s}`;
-    const step = stepData[s];
-    card.innerHTML = `
-      <div class="instr-card-header">
-        <div class="instr-step-num">${s + 1}</div>
-        <div class="instr-bom-box">${buildBomHtml(step.partRefs, s)}</div>
-      </div>
-      <div class="instr-render" id="instr-render-${s}">
-        <div class="instr-generating">
-          <div class="spinner"></div>
-          <span>Rendering step ${s + 1}/${stepData.length}...</span>
-        </div>
-      </div>
-    `;
-    grid.appendChild(card);
-  }
+  instructionGenerating = true;
+  instructionReady = false;
+  const revision = ++instructionRevision;
 
-  // Use a dedicated offscreen renderer + fresh scene for snapshots
-  const W = 700, H = 500;
-  const offRenderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-  offRenderer.setSize(W, H);
-  offRenderer.setPixelRatio(1.5);
-  offRenderer.toneMapping = THREE.ACESFilmicToneMapping;
-  instrRenderers = [offRenderer];
+  createInstructionPlaceholders();
 
-  // Compute overall model bounding box once (from the MAIN scene model)
-  // This gives us a stable camera for all steps
-  model.updateMatrixWorld(true);
-  const fullBox = new THREE.Box3().setFromObject(model);
-  const fullCenter = fullBox.getCenter(new THREE.Vector3());
-  const fullSize = fullBox.getSize(new THREE.Vector3());
-  const maxDim = Math.max(fullSize.x, fullSize.y, fullSize.z);
-  const camDist = maxDim * 1.6;
+  let offRenderer = null;
+  let instructionModel = null;
 
-  // Render each step using the main model directly — save/restore state
-  for (let s = 0; s < stepData.length; s++) {
-    await renderStepSnapshot(s, offRenderer, W, H, fullCenter, camDist);
-    await new Promise(r => setTimeout(r, 10));
-  }
+  try {
+    // Let placeholders paint before doing the heavier WebGL work.
+    await new Promise(resolve => requestAnimationFrame(resolve));
 
-  // Restore main viewer state
-  goToStep(currentStep);
-}
+    const width = 840;
+    const height = 630;
 
-// Save material state for restore
-function saveMaterialState(obj) {
-  const states = [];
-  obj.traverse(c => {
-    if (c.isMesh && c.material) {
-      const mats = Array.isArray(c.material) ? c.material : [c.material];
-      mats.forEach(m => {
-        states.push({ mat: m, transparent: m.transparent, opacity: m.opacity, depthWrite: m.depthWrite });
+    offRenderer = new THREE.WebGLRenderer({
+      antialias: true,
+      preserveDrawingBuffer: true,
+    });
+    offRenderer.setPixelRatio(1);
+    offRenderer.setSize(width, height, false);
+    offRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    offRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+    const instructionScene = new THREE.Scene();
+    instructionScene.background = new THREE.Color(0xc8d8e8);
+
+    instructionScene.add(new THREE.AmbientLight(0xffffff, 0.82));
+
+    const key = new THREE.DirectionalLight(0xffffff, 0.9);
+    key.position.set(120, 200, 160);
+    instructionScene.add(key);
+
+    const fill = new THREE.DirectionalLight(0x9aa8ff, 0.22);
+    fill.position.set(-100, 80, -100);
+    instructionScene.add(fill);
+
+    instructionModel = cloneForInstructions(model);
+    instructionScene.add(instructionModel);
+
+    const snapshotCamera = new THREE.PerspectiveCamera(38, width / height, 0.1, 100000);
+
+    for (let stepIdx = 0; stepIdx < stepData.length; stepIdx++) {
+      if (revision !== instructionRevision) return;
+
+      applyStepAppearance(instructionModel, stepIdx, INSTR_PAST_OPACITY);
+      instructionModel.updateMatrixWorld(true);
+
+      // Fit each accumulated step independently. The previous implementation
+      // framed every page against the final model, making early steps tiny.
+      const box = getRenderableBounds(instructionModel, true);
+      fitCameraToBox(
+        snapshotCamera,
+        box,
+        new THREE.Vector3(0.72, 0.58, 0.9),
+        1.2
+      );
+
+      const outline = buildStepOutline(instructionModel, stepIdx);
+      if (outline) instructionScene.add(outline);
+
+      offRenderer.render(instructionScene, snapshotCamera);
+      const blob = await canvasToBlob(offRenderer.domElement);
+
+      if (outline) {
+        instructionScene.remove(outline);
+        disposeOutline(outline);
+      }
+
+      if (revision !== instructionRevision) return;
+
+      const objectUrl = URL.createObjectURL(blob);
+      instructionObjectUrls.push(objectUrl);
+
+      const container = document.getElementById('instr-render-' + stepIdx);
+      if (container) {
+        const image = document.createElement('img');
+        image.src = objectUrl;
+        image.alt = 'Build step ' + (stepIdx + 1);
+        image.loading = 'lazy';
+        image.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block';
+        container.replaceChildren(image);
+      }
+
+      // Yield so long instruction sets do not lock the page for one giant task.
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+
+    if (revision === instructionRevision) {
+      instructionReady = true;
+    }
+
+  } catch (err) {
+    console.error('Instruction rendering failed:', err);
+
+    if (revision === instructionRevision) {
+      document.querySelectorAll('.instr-generating').forEach(node => {
+        node.replaceChildren();
+        node.textContent = 'Could not render this step.';
       });
     }
-    states.push({ obj: c, visible: c.visible });
-  });
-  return states;
-}
+  } finally {
+    if (instructionModel) disposeCloneMaterials(instructionModel);
+    if (offRenderer) offRenderer.dispose();
 
-function restoreMaterialState(states) {
-  for (const s of states) {
-    if (s.mat) {
-      s.mat.transparent = s.transparent;
-      s.mat.opacity = s.opacity;
-      s.mat.depthWrite = s.depthWrite;
-    }
-    if (s.obj) {
-      s.obj.visible = s.visible;
+    if (revision === instructionRevision) {
+      instructionGenerating = false;
     }
   }
-}
-
-async function renderStepSnapshot(stepIdx, renderer, W, H, center, camDist) {
-  const container = document.getElementById(`instr-render-${stepIdx}`);
-  if (!container) return;
-
-  // Save current state of ALL children
-  const savedStates = saveMaterialState(model);
-  const savedBg = scene.background.clone();
-  const savedGridVis = gridHelper.visible;
-
-  // Set instruction scene
-  scene.background = new THREE.Color(0xc8d8e8);
-  gridHelper.visible = false;
-
-  // Configure visibility & opacity for this step
-  for (let s = 0; s < stepData.length; s++) {
-    const step = stepData[s];
-    for (const child of step.children) {
-      if (s > stepIdx) {
-        // Future - hide
-        child.visible = false;
-        child.traverse(c => { c.visible = false; });
-      } else if (s === stepIdx) {
-        // Current step - full opacity
-        child.visible = true;
-        child.traverse(c => {
-          c.visible = true;
-          if (c.isMesh && c.material) {
-            (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => {
-              m.transparent = false;
-              m.opacity = 1.0;
-              m.depthWrite = true;
-            });
-          }
-        });
-      } else {
-        // Past - dimmed
-        child.visible = true;
-        child.traverse(c => {
-          c.visible = true;
-          if (c.isMesh && c.material) {
-            (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => {
-              m.transparent = true;
-              m.opacity = 0.35;
-              m.depthWrite = false;
-            });
-          }
-        });
-      }
-    }
-  }
-
-  // Add green edge outlines for current step
-  const outlineGroup = new THREE.Group();
-  for (const child of stepData[stepIdx].children) {
-    child.traverse(c => {
-      if (c.isMesh && c.geometry) {
-        // Check it has real triangle faces
-        const idx = c.geometry.index;
-        const pos = c.geometry.getAttribute('position');
-        if (!pos || pos.count < 3) return;
-        if (idx && idx.count < 3) return;
-
-        const edges = new THREE.EdgesGeometry(c.geometry, 25);
-        if (!edges.getAttribute('position') || edges.getAttribute('position').count < 6) return;
-
-        const lineMat = new THREE.LineBasicMaterial({
-          color: OUTLINE_COLOR, linewidth: 1.5, transparent: true, opacity: 0.7,
-        });
-        const wire = new THREE.LineSegments(edges, lineMat);
-        c.updateWorldMatrix(true, false);
-        wire.applyMatrix4(c.matrixWorld);
-        // Apply model's own rotation (Math.PI on X)
-        wire.applyMatrix4(model.matrixWorld);
-        outlineGroup.add(wire);
-      }
-    });
-  }
-  scene.add(outlineGroup);
-
-  // Camera
-  const cam = new THREE.PerspectiveCamera(40, W / H, 1, 10000);
-  cam.position.set(
-    center.x + camDist * 0.5,
-    center.y + camDist * 0.45,
-    center.z + camDist * 0.65
-  );
-  cam.lookAt(center);
-  cam.updateProjectionMatrix();
-
-  // Render
-  renderer.setSize(W, H);
-  renderer.render(scene, cam);
-
-  // Snapshot to image
-  const dataUrl = renderer.domElement.toDataURL('image/png');
-  container.innerHTML = `<img src="${dataUrl}" style="width:100%;height:100%;object-fit:contain;" />`;
-
-  // Remove outlines
-  scene.remove(outlineGroup);
-  outlineGroup.traverse(c => {
-    if (c.isLineSegments) { c.geometry.dispose(); c.material.dispose(); }
-  });
-
-  // Restore everything
-  restoreMaterialState(savedStates);
-  scene.background = savedBg;
-  gridHelper.visible = savedGridVis;
 }
 
 // ═══════════════════════════════════════
-// GLOBALS
+// GLOBALS / BOOT
 // ═══════════════════════════════════════
 window.nextStep = nextStep;
 window.prevStep = prevStep;
@@ -1085,9 +1523,6 @@ window.openInstructions = openInstructions;
 window.closeInstructions = closeInstructions;
 Object.defineProperty(window, '_totalSteps', { get: () => stepData.length });
 
-// ═══════════════════════════════════════
-// BOOT
-// ═══════════════════════════════════════
 initScene();
 </script>
 </body>
