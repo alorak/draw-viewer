@@ -1,7 +1,7 @@
 name: Deploy Pages on PR merge
 
 on:
-  pull_request:
+  pull_request_target:
     branches:
       - main
     types:
@@ -16,8 +16,10 @@ concurrency:
 
 jobs:
   deploy:
-    # A closed PR that was not merged must not build or deploy anything.
-    if: ${{ github.event.pull_request.merged == true }}
+    # pull_request_target runs in the base-branch context (refs/heads/main),
+    # which satisfies the github-pages environment branch protection rules.
+    # A PR that is merely closed still must not deploy.
+    if: ${{ github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
