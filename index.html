@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LDraw Step Viewer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&display=swap');
+
+  :root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-tertiary: #1a1a26;
+    --bg-hover: #22223a;
+    --accent: #f7c948;
+    --accent-dim: rgba(247, 201, 72, 0.15);
+    --accent-glow: rgba(247, 201, 72, 0.3);
+    --text-primary: #e8e6e3;
+    --text-secondary: #8a8a9a;
+    --text-muted: #55556a;
+    --border: #2a2a3a;
+    --danger: #f87171;
+    --scene-bg: #0a0a0f;
+    --grid-a: #2a2a3a;
+    --grid-b: #1a1a26;
+    --bom-bg: rgba(18,18,26,0.92);
+    --bom-border: rgba(42,42,58,0.8);
+    --instr-bg: #c8d8e8;
+    --instr-card: #ffffff;
+    --instr-text: #1a1a2e;
+    --instr-muted: #6a6a88;
+    --instr-border: #b0b8c8;
+  }
+
+  :root[data-theme="light"] {
+    --bg-primary: #eaeaf0;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #e0e0ea;
+    --bg-hover: #d2d2de;
+    --accent: #c88500;
+    --accent-dim: rgba(200, 133, 0, 0.1);
+    --accent-glow: rgba(200, 133, 0, 0.25);
+    --text-primary: #1a1a2e;
+    --text-secondary: #5a5a72;
+    --text-muted: #8888a0;
+    --border: #c8c8d6;
+    --danger: #dc2626;
+    --scene-bg: #dde0e8;
+    --grid-a: #c0c0d0;
+    --grid-b: #d0d0dc;
+    --bom-bg: rgba(255,255,255,0.94);
+    --bom-border: rgba(200,200,214,0.8);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Outfit', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .app { display: grid; grid-template-rows: 52px 1fr 58px; height: 100vh; }
+
+  /* ─── Header ─── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-secondary);
+    z-index: 30;
+  }
+
+  .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+
+  .logo-icon {
+    width: 26px; height: 26px; background: var(--accent);
+    border-radius: 5px; display: grid; place-items: center;
+    font-size: 13px; color: #000; font-weight: 700;
+  }
+
+  .file-info {
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    color: var(--text-secondary); background: var(--bg-tertiary);
+    padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border);
+  }
+
+  .hdr-actions { display: flex; gap: 6px; align-items: center; }
+
+  .btn {
+    display: flex; align-items: center; gap: 5px;
+    padding: 6px 12px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg-tertiary);
+    color: var(--text-primary); font-family: 'Outfit', sans-serif;
+    font-size: 12px; font-weight: 500; cursor: pointer;
+    transition: all 0.15s; white-space: nowrap;
+  }
+
+  .btn:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .btn.primary {
+    background: var(--accent); color: #000;
+    border-color: var(--accent); font-weight: 600;
+  }
+
+  .btn.primary:hover:not(:disabled) {
+    filter: brightness(1.1); box-shadow: 0 0 12px var(--accent-glow);
+  }
+
+  .btn.active {
+    background: var(--accent); color: #000;
+    border-color: var(--accent);
+  }
+
+  .btn-icon {
+    width: 32px; height: 32px; padding: 0;
+    display: grid; place-items: center; font-size: 15px; border-radius: 6px;
+  }
+
+  /* ─── Main ─── */
+  .main-area { position: relative; overflow: hidden; }
+
+  #canvas-container { width: 100%; height: 100%; background: var(--bg-primary); }
+  #canvas-container canvas { width: 100% !important; height: 100% !important; display: block; }
+
+  /* ─── Drop Zone ─── */
+  .drop-zone {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 10; background: var(--bg-primary); transition: opacity 0.3s;
+  }
+  .drop-zone.hidden { opacity: 0; pointer-events: none; }
+
+  .drop-zone-inner {
+    border: 2px dashed var(--border); border-radius: 14px;
+    padding: 50px 70px; display: flex; flex-direction: column;
+    align-items: center; gap: 12px; cursor: pointer; transition: all 0.3s;
+  }
+
+  .drop-zone-inner:hover, .drop-zone.dragover .drop-zone-inner {
+    border-color: var(--accent); background: var(--accent-dim);
+    box-shadow: 0 0 30px var(--accent-glow);
+  }
+
+  .drop-icon {
+    width: 56px; height: 56px; border-radius: 14px;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    display: grid; place-items: center; font-size: 24px; transition: all 0.3s;
+  }
+
+  .drop-zone-inner:hover .drop-icon { background: var(--accent-dim); border-color: var(--accent); }
+  .drop-title { font-size: 16px; font-weight: 600; }
+  .drop-sub { font-size: 12px; color: var(--text-secondary); }
+  .drop-formats { display: flex; gap: 5px; }
+
+  .fmt {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    padding: 2px 6px; border-radius: 3px;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    color: var(--text-secondary);
+  }
+
+  /* ─── Loading ─── */
+  .loading {
+    position: absolute; inset: 0; background: rgba(10,10,15,0.9);
+    display: none; flex-direction: column; align-items: center;
+    justify-content: center; gap: 12px; z-index: 20;
+  }
+  .loading.visible { display: flex; }
+
+  .spinner {
+    width: 36px; height: 36px;
+    border: 3px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .load-text { font-size: 13px; color: var(--text-secondary); }
+  .load-sub { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+
+  /* ─── Step overlay ─── */
+  .step-overlay {
+    position: absolute; top: 12px; left: 12px; z-index: 5; display: none;
+  }
+  .step-overlay.visible { display: flex; flex-direction: column; gap: 6px; }
+
+  .step-badge {
+    background: var(--bom-bg); border: 1px solid var(--bom-border);
+    border-radius: 10px; padding: 10px 14px; backdrop-filter: blur(10px);
+  }
+
+  .step-label {
+    font-size: 10px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 2px;
+  }
+
+  .step-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 26px; font-weight: 700; color: var(--accent); line-height: 1;
+  }
+
+  .step-tot {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; color: var(--text-muted);
+  }
+
+  /* ─── BOM Panel ─── */
+  .bom-panel {
+    position: absolute; top: 12px; right: 12px; z-index: 5;
+    display: none; background: var(--bom-bg);
+    border: 1px solid var(--bom-border); border-radius: 10px;
+    padding: 10px 14px; backdrop-filter: blur(10px); max-width: 260px;
+  }
+  .bom-panel.visible { display: block; }
+
+  .bom-title {
+    font-size: 10px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;
+  }
+
+  .bom-list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  .bom-item {
+    display: flex; align-items: center; gap: 5px;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px;
+  }
+
+  .bom-color {
+    width: 12px; height: 12px; border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.15); flex-shrink: 0;
+  }
+
+  .bom-name { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-secondary); }
+  .bom-qty { font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; color: var(--accent); margin-left: 2px; }
+
+  /* ─── Hints ─── */
+  .hints {
+    position: absolute; bottom: 12px; right: 12px;
+    z-index: 5; display: none; gap: 6px;
+  }
+  .hints.visible { display: flex; }
+
+  .hint {
+    font-size: 10px; color: var(--text-muted);
+    background: var(--bom-bg); border: 1px solid var(--bom-border);
+    border-radius: 5px; padding: 3px 6px; backdrop-filter: blur(10px);
+  }
+  .hint kbd {
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--bg-tertiary); padding: 0 3px; border-radius: 2px; margin-right: 3px;
+  }
+
+  /* ─── Footer ─── */
+  footer {
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px; padding: 0 16px;
+    border-top: 1px solid var(--border); background: var(--bg-secondary);
+  }
+  footer.disabled { opacity: 0.3; pointer-events: none; }
+
+  .progress { flex: 1; max-width: 360px; height: 3px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden; }
+  .progress-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; }
+
+  .step-txt {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; color: var(--text-secondary); min-width: 60px; text-align: center;
+  }
+
+  #file-input { display: none; }
+
+  /* ═══════════════════════════════════════════════════
+     INSTRUCTION MODE — Scrollable booklet overlay
+     ═══════════════════════════════════════════════════ */
+  .instr-overlay {
+    position: fixed; inset: 0; z-index: 50;
+    display: none;
+    background: var(--instr-bg);
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .instr-overlay.visible { display: block; }
+
+  .instr-header {
+    position: sticky; top: 0; z-index: 51;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px;
+    background: #fff;
+    border-bottom: 2px solid var(--instr-border);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
+
+  .instr-header-title {
+    font-size: 16px; font-weight: 700; color: var(--instr-text);
+  }
+
+  .instr-close-btn {
+    padding: 6px 14px; border-radius: 6px;
+    border: 1px solid var(--instr-border); background: #f0f0f4;
+    color: var(--instr-text); font-family: 'Outfit', sans-serif;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+
+  .instr-close-btn:hover { background: #e0e0e8; }
+
+  .instr-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 24px 20px 40px;
+    max-width: 700px;
+    margin: 0 auto;
+  }
+
+  /* Each step card */
+  .instr-card {
+    background: var(--instr-card);
+    border-radius: 12px;
+    border: 1px solid var(--instr-border);
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+
+  .instr-card-header {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid #e8e8f0;
+  }
+
+  .instr-step-num {
+    font-family: 'Outfit', sans-serif;
+    font-size: 32px; font-weight: 800;
+    color: var(--instr-text);
+    line-height: 1;
+    min-width: 36px;
+  }
+
+  .instr-bom-box {
+    flex: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    border: 1.5px solid #d0d4e0;
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: #f8f8fc;
+  }
+
+  .instr-bom-entry {
+    display: flex; align-items: center; gap: 6px;
+    background: #eef0f6;
+    border: 1px solid #d8dce6;
+    border-radius: 6px;
+    padding: 6px 10px;
+  }
+
+  .instr-bom-swatch {
+    width: 22px; height: 22px; border-radius: 4px;
+    border: 1px solid rgba(0,0,0,0.12);
+    flex-shrink: 0;
+  }
+
+  .instr-bom-info {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+  }
+
+  .instr-bom-qty {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; font-weight: 800;
+    color: var(--instr-text);
+    flex-shrink: 0;
+  }
+
+  .instr-bom-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; color: var(--instr-muted);
+  }
+
+  /* The 3D render area */
+  .instr-render {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    background: var(--instr-bg);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+
+  .instr-render canvas {
+    width: 100% !important;
+    height: 100% !important;
+    display: block;
+  }
+
+  .instr-generating {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 10px; padding: 40px; color: var(--instr-muted);
+    font-size: 13px;
+  }
+
+  .instr-generating .spinner {
+    border-color: var(--instr-border);
+    border-top-color: #6a6a88;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">▦</div>
+      <span>LDraw Viewer</span>
+    </div>
+    <div id="file-info" class="file-info" style="display:none"></div>
+    <div class="hdr-actions">
+      <button class="btn" id="btn-instr" onclick="openInstructions()" style="display:none">📖 Instructions</button>
+      <button class="btn btn-icon" id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">🌙</button>
+      <button class="btn" onclick="document.getElementById('file-input').click()">📂 Open</button>
+    </div>
+  </header>
+
+  <div class="main-area">
+    <div id="canvas-container"></div>
+
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-zone-inner" onclick="document.getElementById('file-input').click()">
+        <div class="drop-icon">▦</div>
+        <div class="drop-title">Drop your LDraw file here</div>
+        <div class="drop-sub">or click to browse</div>
+        <div class="drop-formats">
+          <span class="fmt">.ldr</span>
+          <span class="fmt">.mpd</span>
+          <span class="fmt">.dat</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <div class="load-text" id="load-text">Loading...</div>
+      <div class="load-sub" id="load-sub"></div>
+    </div>
+
+    <div class="step-overlay" id="step-overlay">
+      <div class="step-badge">
+        <div class="step-label">Build Step</div>
+        <span class="step-num" id="step-num">1</span>
+        <span class="step-tot" id="step-tot">/ 1</span>
+      </div>
+    </div>
+
+    <div class="bom-panel" id="bom-panel">
+      <div class="bom-title">Parts in this step</div>
+      <div class="bom-list" id="bom-list"></div>
+    </div>
+
+    <div class="hints" id="hints">
+      <div class="hint"><kbd>←→</kbd> Steps</div>
+      <div class="hint"><kbd>Drag</kbd> Rotate</div>
+      <div class="hint"><kbd>Scroll</kbd> Zoom</div>
+    </div>
+
+    <input type="file" id="file-input" accept=".ldr,.mpd,.dat" />
+  </div>
+
+  <footer class="disabled" id="footer">
+    <button class="btn" id="btn-first" onclick="goToStep(0)">⏮</button>
+    <button class="btn" id="btn-prev" onclick="prevStep()">← Prev</button>
+    <div class="progress"><div class="progress-bar" id="pbar"></div></div>
+    <span class="step-txt" id="ftxt">0 / 0</span>
+    <button class="btn primary" id="btn-next" onclick="nextStep()">Next →</button>
+    <button class="btn" id="btn-last" onclick="goToStep(window._totalSteps-1)">⏭</button>
+  </footer>
+</div>
+
+<!-- INSTRUCTION MODE OVERLAY -->
+<div class="instr-overlay" id="instr-overlay">
+  <div class="instr-header">
+    <div class="instr-header-title" id="instr-title">Build Instructions</div>
+    <button class="instr-close-btn" onclick="closeInstructions()">✕ Close</button>
+  </div>
+  <div class="instr-grid" id="instr-grid"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { LDrawLoader } from 'three/addons/loaders/LDrawLoader.js';
+
+// ═══════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════
+const PARTS_URL = 'https://raw.githubusercontent.com/gkjohnson/ldraw-parts-library/master/complete/ldraw/';
+const COLORS_URL = 'https://raw.githubusercontent.com/gkjohnson/ldraw-parts-library/master/colors/ldcfgalt.ldr';
+
+const LDRAW_COLORS = {
+  0:'#1B2A34',1:'#1E5AA8',2:'#00852B',3:'#069D9F',4:'#B40000',5:'#D05098',
+  6:'#543324',7:'#8A928D',8:'#545955',9:'#C870A0',10:'#58AB41',11:'#00AAA4',
+  12:'#F06D61',13:'#F6A9BB',14:'#FAC80A',15:'#F4F4F4',16:'#FFFF00',17:'#A5CA18',
+  19:'#E4ADC8',20:'#D9E4A7',22:'#81007B',23:'#0057A6',25:'#F9A777',26:'#9C006B',
+  27:'#7C503A',28:'#548A3E',29:'#F5C189',33:'#0A1327',34:'#06592A',36:'#BF1C2E',
+  38:'#A83D15',46:'#F0DC7C',47:'#F8F8F8',68:'#F7AD63',69:'#BB805A',70:'#6C4A27',
+  71:'#C8C8C8',72:'#6E6E6E',73:'#4478A5',74:'#59B278',77:'#D47BA5',78:'#F0C8A0',
+  84:'#C9CAE2',85:'#5A3463',86:'#6E5951',100:'#EEB4A4',110:'#2F4F7F',
+  112:'#4570A5',115:'#A0BCAC',118:'#97D899',120:'#DEEA92',148:'#575857',
+  178:'#CC702A',183:'#F8F8F8',191:'#FCAC00',212:'#A3C5E8',216:'#990000',
+  226:'#F4F47C',232:'#69B9E3',272:'#0A3463',288:'#008F2D',295:'#FF94C2',
+  308:'#352100',320:'#680028',321:'#009742',322:'#5DADE2',323:'#AFDEE0',
+  326:'#D7F000',330:'#796E65',334:'#C67020',335:'#5F758C',351:'#FF8080',
+  353:'#FF6060',366:'#D05020',373:'#845E98',378:'#9CCBC3',379:'#0A5B7E',
+  450:'#B67B50',462:'#FFA500',484:'#8B0000',503:'#C8C8C8',
+};
+
+// Green outline material for instruction mode
+const OUTLINE_COLOR = 0x00cc44;
+
+// ═══════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════
+let scene, camera, renderer, controls, gridHelper;
+let model = null;
+let loader = null;
+let materialsReady = false;
+let isDark = true;
+let rawText = '';
+let fileName = '';
+
+let stepData = [];
+let currentStep = 0;
+
+// ═══════════════════════════════════════
+// INIT SCENE
+// ═══════════════════════════════════════
+function initScene() {
+  const el = document.getElementById('canvas-container');
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0a0f);
+
+  camera = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 1, 10000);
+  camera.position.set(150, 200, 250);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(el.clientWidth, el.clientHeight);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  el.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+  const d1 = new THREE.DirectionalLight(0xffffff, 0.8);
+  d1.position.set(100, 200, 150);
+  scene.add(d1);
+  const d2 = new THREE.DirectionalLight(0x8888ff, 0.3);
+  d2.position.set(-100, 100, -100);
+  scene.add(d2);
+
+  gridHelper = new THREE.GridHelper(400, 20, 0x2a2a3a, 0x1a1a26);
+  scene.add(gridHelper);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.1;
+
+  (function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  })();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = el.clientWidth / el.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(el.clientWidth, el.clientHeight);
+  });
+}
+
+// ═══════════════════════════════════════
+// INIT LOADER
+// ═══════════════════════════════════════
+async function initLoader() {
+  if (loader && materialsReady) return;
+  showLoad('Initializing loader...', 'Setting parts library');
+  loader = new LDrawLoader();
+  loader.setPartsLibraryPath(PARTS_URL);
+
+  showLoad('Loading colors...', 'Downloading LDConfig');
+  try {
+    const resp = await fetch(COLORS_URL);
+    if (resp.ok) {
+      const txt = await resp.text();
+      await new Promise((res, rej) => { loader.parse(txt, res, undefined, rej); });
+    }
+  } catch (e) { console.warn('Color preload failed:', e.message); }
+  materialsReady = true;
+}
+
+// ═══════════════════════════════════════
+// PARSE STEPS FROM RAW TEXT
+// ═══════════════════════════════════════
+function parseStepsFromText(text) {
+  const lines = text.split(/\r?\n/);
+  const result = [];
+  let current = [];
+  let inMain = true;
+  let seenFile = false;
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line.startsWith('0 FILE')) {
+      if (seenFile) { inMain = false; break; }
+      seenFile = true; continue;
+    }
+    if (line === '0 NOFILE') { inMain = false; break; }
+    if (!inMain) break;
+
+    if (line === '0 STEP') {
+      if (current.length > 0) { result.push({ partRefs: [...current] }); current = []; }
+      continue;
+    }
+
+    if (line.startsWith('1 ')) {
+      const t = line.split(/\s+/);
+      if (t.length >= 15) {
+        current.push({ color: parseInt(t[1], 10), partId: t.slice(14).join(' ') });
+      }
+    }
+  }
+  if (current.length > 0) result.push({ partRefs: [...current] });
+  return result;
+}
+
+// ═══════════════════════════════════════
+// LOAD FILE
+// ═══════════════════════════════════════
+async function loadFile(content, name) {
+  rawText = content;
+  fileName = name;
+
+  try {
+    await initLoader();
+    showLoad('Parsing model...', name);
+
+    const group = await new Promise((res, rej) => { loader.parse(content, res, undefined, rej); });
+
+    if (model) {
+      scene.remove(model);
+      model.traverse(c => {
+        if (c.isMesh) {
+          c.geometry?.dispose();
+          (Array.isArray(c.material) ? c.material : [c.material]).forEach(x => x?.dispose());
+        }
+      });
+    }
+
+    model = group;
+    model.rotation.x = Math.PI;
+    scene.add(model);
+
+    const textSteps = parseStepsFromText(rawText);
+    const topChildren = model.children.filter(c => c.isGroup || c.isMesh);
+
+    stepData = [];
+    let ci = 0;
+    for (const ts of textSteps) {
+      const children = [];
+      for (let p = 0; p < ts.partRefs.length && ci < topChildren.length; p++, ci++) {
+        children.push(topChildren[ci]);
+      }
+      stepData.push({ children, partRefs: ts.partRefs });
+    }
+    if (ci < topChildren.length && stepData.length > 0) {
+      while (ci < topChildren.length) stepData[stepData.length - 1].children.push(topChildren[ci++]);
+    }
+    if (stepData.length === 0) stepData = [{ children: topChildren, partRefs: [] }];
+
+    console.log(`[Steps] ${stepData.length} steps`);
+
+    // Fit camera
+    const box = new THREE.Box3().setFromObject(model);
+    const center = box.getCenter(new THREE.Vector3());
+    const sz = box.getSize(new THREE.Vector3());
+    const dist = Math.max(sz.x, sz.y, sz.z) * 1.5;
+    camera.position.set(center.x + dist * 0.5, center.y + dist * 0.6, center.z + dist * 0.8);
+    controls.target.copy(center);
+    controls.update();
+
+    // UI
+    document.getElementById('drop-zone').classList.add('hidden');
+    document.getElementById('footer').classList.remove('disabled');
+    document.getElementById('step-overlay').classList.add('visible');
+    document.getElementById('bom-panel').classList.add('visible');
+    document.getElementById('hints').classList.add('visible');
+    document.getElementById('file-info').style.display = 'block';
+    document.getElementById('file-info').textContent = name;
+    document.getElementById('btn-instr').style.display = 'flex';
+
+    hideLoad();
+    goToStep(0);
+
+  } catch (err) {
+    console.error('Load error:', err);
+    hideLoad();
+    alert('Error: ' + err.message);
+  }
+}
+
+// ═══════════════════════════════════════
+// 3D VIEWER STEP NAVIGATION
+// ═══════════════════════════════════════
+function goToStep(idx) {
+  const total = stepData.length;
+  if (total === 0) return;
+  currentStep = Math.max(0, Math.min(idx, total - 1));
+
+  for (let s = 0; s < total; s++) {
+    stepData[s].children.forEach(child => {
+      child.visible = s <= currentStep;
+      setOpacity(child, s === currentStep ? 1.0 : (s < currentStep ? 0.45 : 1.0));
+    });
+  }
+  updateUI();
+  updateBOM();
+}
+
+function setOpacity(obj, op) {
+  obj.traverse(c => {
+    if (c.isMesh && c.material) {
+      (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => {
+        m.transparent = op < 1; m.opacity = op; m.depthWrite = op >= 1;
+      });
+    }
+  });
+}
+
+function nextStep() { goToStep(currentStep + 1); }
+function prevStep() { goToStep(currentStep - 1); }
+
+function updateUI() {
+  const t = stepData.length;
+  document.getElementById('step-num').textContent = currentStep + 1;
+  document.getElementById('step-tot').textContent = `/ ${t}`;
+  document.getElementById('ftxt').textContent = `${currentStep + 1} / ${t}`;
+  document.getElementById('pbar').style.width = (t > 1 ? (currentStep / (t - 1)) * 100 : 100) + '%';
+  document.getElementById('btn-prev').disabled = currentStep === 0;
+  document.getElementById('btn-first').disabled = currentStep === 0;
+  document.getElementById('btn-next').disabled = currentStep === t - 1;
+  document.getElementById('btn-last').disabled = currentStep === t - 1;
+}
+
+function updateBOM() {
+  const panel = document.getElementById('bom-list');
+  const step = stepData[currentStep];
+  if (!step || !step.partRefs.length) {
+    panel.innerHTML = '<span style="font-size:11px;color:var(--text-muted)">No part info</span>';
+    return;
+  }
+  const g = {};
+  step.partRefs.forEach(({ color, partId }) => {
+    const k = `${color}|${partId}`;
+    if (!g[k]) g[k] = { color, partId, qty: 0 }; g[k].qty++;
+  });
+  panel.innerHTML = Object.values(g).map(({ color, partId, qty }) => `
+    <div class="bom-item">
+      <div class="bom-color" style="background:${LDRAW_COLORS[color]||'#888'}"></div>
+      <span class="bom-name">${partId.replace(/\.dat/i,'')}</span>
+      <span class="bom-qty">×${qty}</span>
+    </div>
+  `).join('');
+}
+
+// ═══════════════════════════════════════
+// THEME
+// ═══════════════════════════════════════
+function toggleTheme() {
+  isDark = !isDark;
+  document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+  document.getElementById('theme-toggle').textContent = isDark ? '🌙' : '☀️';
+  if (scene) {
+    scene.background = new THREE.Color(isDark ? 0x0a0a0f : 0xdde0e8);
+    if (gridHelper) { gridHelper.material.color.set(isDark ? 0x2a2a3a : 0xc0c0d0); }
+  }
+}
+
+// ═══════════════════════════════════════
+// LOADING
+// ═══════════════════════════════════════
+function showLoad(t, s) {
+  document.getElementById('loading').classList.add('visible');
+  document.getElementById('load-text').textContent = t || '';
+  document.getElementById('load-sub').textContent = s || '';
+}
+function hideLoad() { document.getElementById('loading').classList.remove('visible'); }
+
+// ═══════════════════════════════════════
+// FILE INPUT
+// ═══════════════════════════════════════
+const dz = document.getElementById('drop-zone');
+document.getElementById('file-input').addEventListener('change', e => {
+  if (e.target.files[0]) readFile(e.target.files[0]);
+});
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
+});
+function readFile(file) {
+  const r = new FileReader();
+  r.onload = e => loadFile(e.target.result, file.name);
+  r.readAsText(file);
+}
+
+// ═══════════════════════════════════════
+// KEYBOARD
+// ═══════════════════════════════════════
+document.addEventListener('keydown', e => {
+  if (document.getElementById('instr-overlay').classList.contains('visible')) {
+    if (e.key === 'Escape') closeInstructions();
+    return;
+  }
+  if (e.key === 'ArrowRight' || e.key === 'n') nextStep();
+  if (e.key === 'ArrowLeft' || e.key === 'p') prevStep();
+  if (e.key === 'Home') goToStep(0);
+  if (e.key === 'End') goToStep(stepData.length - 1);
+});
+
+// ═══════════════════════════════════════════════════
+// INSTRUCTION MODE
+// ═══════════════════════════════════════════════════
+
+function openInstructions() {
+  if (stepData.length === 0) return;
+  const overlay = document.getElementById('instr-overlay');
+  overlay.classList.add('visible');
+
+  document.getElementById('instr-title').textContent =
+    `Build Instructions — ${fileName.replace(/\.[^.]+$/, '')}`;
+
+  generateInstructionCards();
+}
+
+function closeInstructions() {
+  document.getElementById('instr-overlay').classList.remove('visible');
+  // Clean up offscreen renderers
+  instrRenderers.forEach(r => r.dispose());
+  instrRenderers = [];
+}
+
+let instrRenderers = [];
+
+function buildBomHtml(partRefs, stepIdx) {
+  if (!partRefs || !partRefs.length) return '<span style="font-size:10px;color:#999">—</span>';
+
+  const g = {};
+  partRefs.forEach(({ color, partId }) => {
+    const k = `${color}|${partId}`;
+    if (!g[k]) g[k] = { color, partId, qty: 0 };
+    g[k].qty++;
+  });
+
+  return Object.values(g).map(({ color, partId, qty }) => {
+    const hex = LDRAW_COLORS[color] || '#888';
+    const name = partId.replace(/\.dat/i, '');
+    return `
+      <div class="instr-bom-entry">
+        <div class="instr-bom-swatch" style="background:${hex}"></div>
+        <div class="instr-bom-info">
+          <span class="instr-bom-label">${name}</span>
+          <span class="instr-bom-qty">${qty}x</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function generateInstructionCards() {
+  const grid = document.getElementById('instr-grid');
+  grid.innerHTML = '';
+
+  // Create all placeholder cards
+  for (let s = 0; s < stepData.length; s++) {
+    const card = document.createElement('div');
+    card.className = 'instr-card';
+    card.id = `instr-card-${s}`;
+    const step = stepData[s];
+    card.innerHTML = `
+      <div class="instr-card-header">
+        <div class="instr-step-num">${s + 1}</div>
+        <div class="instr-bom-box">${buildBomHtml(step.partRefs, s)}</div>
+      </div>
+      <div class="instr-render" id="instr-render-${s}">
+        <div class="instr-generating">
+          <div class="spinner"></div>
+          <span>Rendering step ${s + 1}/${stepData.length}...</span>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+
+  // Use a dedicated offscreen renderer + fresh scene for snapshots
+  const W = 700, H = 500;
+  const offRenderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  offRenderer.setSize(W, H);
+  offRenderer.setPixelRatio(1.5);
+  offRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+  instrRenderers = [offRenderer];
+
+  // Compute overall model bounding box once (from the MAIN scene model)
+  // This gives us a stable camera for all steps
+  model.updateMatrixWorld(true);
+  const fullBox = new THREE.Box3().setFromObject(model);
+  const fullCenter = fullBox.getCenter(new THREE.Vector3());
+  const fullSize = fullBox.getSize(new THREE.Vector3());
+  const maxDim = Math.max(fullSize.x, fullSize.y, fullSize.z);
+  const camDist = maxDim * 1.6;
+
+  // Render each step using the main model directly — save/restore state
+  for (let s = 0; s < stepData.length; s++) {
+    await renderStepSnapshot(s, offRenderer, W, H, fullCenter, camDist);
+    await new Promise(r => setTimeout(r, 10));
+  }
+
+  // Restore main viewer state
+  goToStep(currentStep);
+}
+
+// Save material state for restore
+function saveMaterialState(obj) {
+  const states = [];
+  obj.traverse(c => {
+    if (c.isMesh && c.material) {
+      const mats = Array.isArray(c.material) ? c.material : [c.material];
+      mats.forEach(m => {
+        states.push({ mat: m, transparent: m.transparent, opacity: m.opacity, depthWrite: m.depthWrite });
+      });
+    }
+    states.push({ obj: c, visible: c.visible });
+  });
+  return states;
+}
+
+function restoreMaterialState(states) {
+  for (const s of states) {
+    if (s.mat) {
+      s.mat.transparent = s.transparent;
+      s.mat.opacity = s.opacity;
+      s.mat.depthWrite = s.depthWrite;
+    }
+    if (s.obj) {
+      s.obj.visible = s.visible;
+    }
+  }
+}
+
+async function renderStepSnapshot(stepIdx, renderer, W, H, center, camDist) {
+  const container = document.getElementById(`instr-render-${stepIdx}`);
+  if (!container) return;
+
+  // Save current state of ALL children
+  const savedStates = saveMaterialState(model);
+  const savedBg = scene.background.clone();
+  const savedGridVis = gridHelper.visible;
+
+  // Set instruction scene
+  scene.background = new THREE.Color(0xc8d8e8);
+  gridHelper.visible = false;
+
+  // Configure visibility & opacity for this step
+  for (let s = 0; s < stepData.length; s++) {
+    const step = stepData[s];
+    for (const child of step.children) {
+      if (s > stepIdx) {
+        // Future - hide
+        child.visible = false;
+        child.traverse(c => { c.visible = false; });
+      } else if (s === stepIdx) {
+        // Current step - full opacity
+        child.visible = true;
+        child.traverse(c => {
+          c.visible = true;
+          if (c.isMesh && c.material) {
+            (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => {
+              m.transparent = false;
+              m.opacity = 1.0;
+              m.depthWrite = true;
+            });
+          }
+        });
+      } else {
+        // Past - dimmed
+        child.visible = true;
+        child.traverse(c => {
+          c.visible = true;
+          if (c.isMesh && c.material) {
+            (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => {
+              m.transparent = true;
+              m.opacity = 0.35;
+              m.depthWrite = false;
+            });
+          }
+        });
+      }
+    }
+  }
+
+  // Add green edge outlines for current step
+  const outlineGroup = new THREE.Group();
+  for (const child of stepData[stepIdx].children) {
+    child.traverse(c => {
+      if (c.isMesh && c.geometry) {
+        // Check it has real triangle faces
+        const idx = c.geometry.index;
+        const pos = c.geometry.getAttribute('position');
+        if (!pos || pos.count < 3) return;
+        if (idx && idx.count < 3) return;
+
+        const edges = new THREE.EdgesGeometry(c.geometry, 25);
+        if (!edges.getAttribute('position') || edges.getAttribute('position').count < 6) return;
+
+        const lineMat = new THREE.LineBasicMaterial({
+          color: OUTLINE_COLOR, linewidth: 1.5, transparent: true, opacity: 0.7,
+        });
+        const wire = new THREE.LineSegments(edges, lineMat);
+        c.updateWorldMatrix(true, false);
+        wire.applyMatrix4(c.matrixWorld);
+        // Apply model's own rotation (Math.PI on X)
+        wire.applyMatrix4(model.matrixWorld);
+        outlineGroup.add(wire);
+      }
+    });
+  }
+  scene.add(outlineGroup);
+
+  // Camera
+  const cam = new THREE.PerspectiveCamera(40, W / H, 1, 10000);
+  cam.position.set(
+    center.x + camDist * 0.5,
+    center.y + camDist * 0.45,
+    center.z + camDist * 0.65
+  );
+  cam.lookAt(center);
+  cam.updateProjectionMatrix();
+
+  // Render
+  renderer.setSize(W, H);
+  renderer.render(scene, cam);
+
+  // Snapshot to image
+  const dataUrl = renderer.domElement.toDataURL('image/png');
+  container.innerHTML = `<img src="${dataUrl}" style="width:100%;height:100%;object-fit:contain;" />`;
+
+  // Remove outlines
+  scene.remove(outlineGroup);
+  outlineGroup.traverse(c => {
+    if (c.isLineSegments) { c.geometry.dispose(); c.material.dispose(); }
+  });
+
+  // Restore everything
+  restoreMaterialState(savedStates);
+  scene.background = savedBg;
+  gridHelper.visible = savedGridVis;
+}
+
+// ═══════════════════════════════════════
+// GLOBALS
+// ═══════════════════════════════════════
+window.nextStep = nextStep;
+window.prevStep = prevStep;
+window.goToStep = goToStep;
+window.toggleTheme = toggleTheme;
+window.openInstructions = openInstructions;
+window.closeInstructions = closeInstructions;
+Object.defineProperty(window, '_totalSteps', { get: () => stepData.length });
+
+// ═══════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════
+initScene();
+</script>
+</body>
+</html>
